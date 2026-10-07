@@ -1,0 +1,20 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+# The index is a disposable derived artefact; it lives outside the repo by default,
+# but ignore any local override.
+.acadmem/
+*.lance/
+eval/results/
+# Local run artefacts
+.rebuild.log
+.rebuild.err
+.tune.log
+.tune.err
+eval/last_report.json
+eval/tuning_results.json

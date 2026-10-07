@@ -1,0 +1,354 @@
+# Retrieval benchmark for the Part IIA "Studies" vault.
+#
+# STATUS: DRAFT labels, written from the PDFs' own text layer (eval/dump_text.py), NOT from the retrieval
+# system's output. Please review: a label is a claim that "this source (and page / heading) answers this query".
+#
+# Format
+#   id         unique id
+#   category   conceptual | paraphrase | pdf | markdown | cross_document | metadata | context_expansion
+#   query      what the user would ask Codex
+#   filters    optional metadata filters passed to search (module, document_type, file_type, path_prefix,
+#              tags, modified_after, modified_before, ai_generated)
+#   expected   list of relevant items. An item matches a hit when
+#                source  == hit.source_path               (vault-relative; required)
+#                pages   overlap the hit's page range     (optional; PDFs)
+#                heading is a substring of the hit's heading path (optional; case-insensitive)
+#   match      any (default): one matching item counts as success.  all: every item must be found.
+#   expand     context-expansion spec (e.g. "neighbors:1"); expected is then checked against the expanded context
+#   expect_empty  true when the right answer is "no results" (filter returns nothing)
+#   evidence   text that must appear on that page / in that note; verified by `acadmem eval --check-labels`
+#
+# Markdown notes do not exist in the real vault yet, so Markdown-dependent queries use eval/fixtures/notes/,
+# which `acadmem eval` overlays onto a COPY of the vault + index. The real vault is never modified.
+
+version: 1
+
+queries:
+  # ---------------------------------------------------------------- 1. conceptual
+  - id: concept-fvt-proof
+    category: conceptual
+    query: "How do I prove the discrete final value theorem by summing first differences of the sequence?"
+    expected:
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [2], evidence: "summing first differences"}
+
+  - id: concept-jacobi-convergence
+    category: conceptual
+    query: "For which values of v does Jacobi iteration converge for the matrix [[1, v], [v, 5]]?"
+    expected:
+      - {source: "3M1/Questions/3M1_Tripos_2022_Worked_Study_Guide.pdf", pages: [2], evidence: "Jacobi converges precisely for"}
+
+  - id: concept-entropy-special-outcome
+    category: conceptual
+    query: "Entropy of a distribution with one special outcome and the remaining probability spread uniformly over N-1 values"
+    expected:
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [4], evidence: "One special outcome and a uniform tail"}
+
+  - id: concept-ar1-variance
+    category: conceptual
+    query: "What is the stationary variance of X_n = a X_{n-1} + W_n when |a| < 1?"
+    expected:
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [6], evidence: "The stable AR(1) variance"}
+
+  - id: concept-beta-map
+    category: conceptual
+    query: "MAP estimate of a coin's bias with a Beta prior after observing six heads and three tails"
+    expected:
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [5], evidence: "A Beta prior adds pseudo-observations"}
+
+  - id: concept-importance-optimal-q
+    category: conceptual
+    query: "What proposal density minimises the variance of an importance sampling estimator?"
+    expected:
+      - {source: "3M1/Questions/3M1_Tripos_2022_Worked_Study_Guide.pdf", pages: [6], evidence: "The variance-minimising proposal"}
+
+  # ---------------------------------------------------------------- 2. paraphrased
+  - id: para-likelihood-second-moment
+    category: paraphrase
+    query: "Does the mean of the squared data values change where the likelihood for the mean is largest?"
+    expected:
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [2], evidence: "The second moment changes the peak height"}
+
+  - id: para-impulse-limit-not-stable
+    category: paraphrase
+    query: "a feedback block whose impulse response settles to a constant value but the system is still not stable"
+    expected:
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [3], evidence: "A finite impulse limit need not mean stability"}
+
+  - id: para-catastrophic-encoder
+    category: paraphrase
+    query: "an encoder where an input that never stops sending ones still gives only a finite number of ones at the output"
+    match: any
+    expected:
+      - {source: "3F4/Questions/3F4_Tripos_2023_Worked_Study_Guide.pdf", pages: [2, 4], evidence: "catastrophic"}
+      - {source: "3F4/Questions/3F4_Tripos_2022_Worked_Study_Guide.pdf", evidence: "catastrophic"}
+      - {source: "3F4/Questions/3F4_Tripos_2024_Worked_Study_Guide.pdf", evidence: "catastrophic"}
+
+  - id: para-function-of-source
+    category: paraphrase
+    query: "Can transforming a discrete source with a deterministic function ever increase how much uncertainty it carries?"
+    expected:
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [6], evidence: "A deterministic function cannot add"}
+
+  - id: para-noisy-sensor
+    category: paraphrase
+    query: "How does a very unreliable measurement change what I believe about the depth?"
+    expected:
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [4], evidence: "an arbitrarily noisy sensor contributes negligible precision"}
+
+  - id: para-identical-rows
+    category: paraphrase
+    query: "If every row of a Markov transition matrix is the same, are successive samples independent?"
+    expected:
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [5], evidence: "Identical transition rows imply iid samples"}
+
+  - id: para-brickwall-fir
+    category: paraphrase
+    query: "Why is a perfect brick-wall low-pass filter impossible to realise with a finite causal FIR filter?"
+    expected:
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [5], evidence: "noncausal"}
+
+  # ---------------------------------------------------------------- 3. PDF-specific (tables, numbers, figure text)
+  - id: pdf-ce-bias-table
+    category: pdf
+    query: "crib assumes the collector sits at 10 V so ICQ is 1 mA, Rin 3.297 kΩ and gain -400"
+    expected:
+      - {source: "3B1/Questions/3B1_Examples_1_Worked_Revision_Guide.pdf", pages: [3, 4], evidence: "3.297"}
+
+  - id: pdf-design-resistors
+    category: pdf
+    query: "bias divider design RB1 265.24 kΩ RB2 21.631 kΩ with an emitter resistor of 113.95 Ω"
+    expected:
+      - {source: "3B1/Questions/3B1_Examples_1_Worked_Revision_Guide.pdf", pages: [5, 6], evidence: "265.24"}
+
+  - id: pdf-viterbi-table
+    category: pdf
+    query: "Viterbi path metric table with zero termination decoded input bits 11111000"
+    expected:
+      - {source: "3F4/Questions/3F4_Tripos_2023_Worked_Study_Guide.pdf", pages: [3], evidence: "11111000"}
+
+  - id: pdf-generator-taps
+    category: pdf
+    query: "tap patterns 1001, 1010 and 1111 giving octal generators 11, 12, 17 for a rate 1/3 code"
+    expected:
+      - {source: "3F4/Questions/3F4_Tripos_2023_Worked_Study_Guide.pdf", pages: [2], evidence: "octal(11,12,17)"}
+
+  - id: pdf-nand-network
+    category: pdf
+    query: "NAND network where the shared product gate n2 = NAND(a, b') feeds two outputs"
+    expected:
+      - {source: "3B2/Questions/3B2_Examples_1_Worked_Revision_Guide.pdf", pages: [4], evidence: "NAND(a,b′) = (ab′)′"}
+
+  - id: pdf-ar1-estimate
+    category: pdf
+    query: "estimate the AR(1) coefficient as R[1]/R[0] = 4.74/5.26 and the innovation variance"
+    expected:
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [9], evidence: "4.74/5.26"}
+
+  - id: pdf-joint-table
+    category: pdf
+    query: "joint table with P(X=0,Y=0)=0.2, P(Y)=0.3 and 0.7, and a test of independence"
+    expected:
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [2], evidence: "P(X=0,Y=0)=0.2"}
+
+  # ---------------------------------------------------------------- 4. Markdown (fixture notes)
+  - id: md-struggle-bayes
+    category: markdown
+    query: "Why did I struggle with Bayesian inference?"
+    expected:
+      - {source: "3F8/Questions/Bayesian inference problems.md", heading: "What I don't understand", evidence: "I struggled with the difference between the likelihood and the posterior"}
+
+  - id: md-confusion-cond-entropy
+    category: markdown
+    query: "what confused me about conditional entropy"
+    expected:
+      - {source: "3F7/Notes/Entropy confusions.md", heading: "What I don't understand", evidence: "I keep mixing up H(X|Y)"}
+
+  - id: md-ce-bias-notes
+    category: markdown
+    query: "my notes on why the gain of the common-emitter stage depends on the bias current"
+    expected:
+      - {source: "3B1/Notes/Common emitter and bias current.md", evidence: "the gain moves with Ic"}
+
+  - id: md-fvt-checklist
+    category: markdown
+    query: "my checklist before applying the final value theorem"
+    expected:
+      - {source: "3F1/Notes/Z-transform checklist.md", heading: "Before using the final value theorem", evidence: "Look at the poles"}
+
+  - id: md-importance-sign
+    category: markdown
+    query: "what mistake did I make about the sign of the best importance sampling density"
+    expected:
+      - {source: "3M1/Notes/Monte Carlo and importance sampling.md", heading: "My mistake with the sign", evidence: "That is not a density when h changes sign"}
+
+  - id: md-stationarity
+    category: markdown
+    query: "how to tell strict stationarity from wide-sense stationarity, which part did I not follow"
+    expected:
+      - {source: "3F3/Notes/Stationarity and AR(1).md", heading: "What I don't understand", evidence: "Strict stationarity"}
+
+  # ---------------------------------------------------------------- 5. cross-document (note + PDF, both must be found)
+  - id: cross-cond-entropy
+    category: cross_document
+    query: "conditional entropy: where I went wrong and the worked example"
+    match: all
+    expected:
+      - {source: "3F7/Notes/Entropy confusions.md", evidence: "I keep mixing up H(X|Y)"}
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [3], evidence: "Conditional entropy is an average over the condition"}
+
+  - id: cross-beta-prior
+    category: cross_document
+    query: "Beta prior pseudo-counts: what I found confusing and the worked solution"
+    match: all
+    expected:
+      - {source: "3F8/Questions/Bayesian inference problems.md", evidence: "pseudo-counts"}
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [5, 6], evidence: "pseudo"}
+
+  - id: cross-ce-bias
+    category: cross_document
+    query: "common-emitter gain depends on the quiescent current: the crib's worked example and my own notes"
+    match: all
+    expected:
+      - {source: "3B1/Notes/Common emitter and bias current.md", evidence: "the gain moves with Ic"}
+      - {source: "3B1/Questions/3B1_Examples_1_Worked_Revision_Guide.pdf", pages: [3, 4], evidence: "Why “−400” is conditional"}
+
+  - id: cross-importance
+    category: cross_document
+    query: "importance sampling proposal that changes sign, my mistake and the solution that repairs it"
+    match: all
+    expected:
+      - {source: "3M1/Notes/Monte Carlo and importance sampling.md", evidence: "absolute value of h times p"}
+      - {source: "3M1/Questions/3M1_Tripos_2022_Worked_Study_Guide.pdf", pages: [6], evidence: "The crib’s q ∝ hp is not generally a valid density"}
+
+  - id: cross-ar1
+    category: cross_document
+    query: "AR(1) stationary variance: my notes and the examples-paper derivation"
+    match: all
+    expected:
+      - {source: "3F3/Notes/Stationarity and AR(1).md", evidence: "X_n = a X_{n-1} + W_n"}
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [6], evidence: "The stable AR(1) variance"}
+
+  # ---------------------------------------------------------------- 6. metadata-constrained
+  - id: meta-viterbi-2023
+    category: metadata
+    query: "Viterbi decoding with trellis path metrics"
+    filters: {path_prefix: "3F4/Questions/3F4_Tripos_2023"}
+    expected:
+      - {source: "3F4/Questions/3F4_Tripos_2023_Worked_Study_Guide.pdf", pages: [3], evidence: "Viterbi metrics with zero termination"}
+
+  - id: meta-aliasing-3f1
+    category: metadata
+    query: "sampling a band-limited signal, aliasing and the choice of sampling period"
+    filters: {module: "3F1"}
+    match: any
+    expected:
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [8], evidence: "aliasing"}
+      - {source: "3F1/Questions/3F1_Tripos_2021_Worked_Study_Guide.pdf", pages: [6, 8], evidence: "aliasing"}
+
+  - id: meta-huffman-examples1
+    category: metadata
+    query: "Huffman code construction and expected length"
+    filters: {path_prefix: "3F7/Questions/3F7_Examples_1"}
+    expected:
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [14, 15, 16, 17, 18, 19], evidence: "Huffman"}
+
+  - id: meta-markdown-only
+    category: metadata
+    query: "the things I did not understand"
+    filters: {file_type: "md"}
+    match: any
+    expected:
+      - {source: "3F7/Notes/Entropy confusions.md", evidence: "What I don't understand"}
+      - {source: "3F8/Questions/Bayesian inference problems.md", evidence: "What I don't understand"}
+      - {source: "3B1/Notes/Common emitter and bias current.md", evidence: "What I don't understand"}
+      - {source: "3F3/Notes/Stationarity and AR(1).md", evidence: "What I don't understand"}
+
+  - id: meta-ai-only
+    category: metadata
+    query: "summary of the decoding algorithm"
+    filters: {ai_generated: true}
+    expected:
+      - {source: "3F4/Notes/Viterbi decoding summary (AI).md", evidence: "AI-generated summary"}
+
+  - id: meta-human-only
+    category: metadata
+    query: "Viterbi decoding survivors and traceback"
+    filters: {ai_generated: false}
+    match: any
+    expected:
+      - {source: "3F4/Questions/3F4_Tripos_2023_Worked_Study_Guide.pdf", evidence: "Viterbi"}
+      - {source: "3F4/Questions/3F4_Tripos_2022_Worked_Study_Guide.pdf", evidence: "Viterbi"}
+      - {source: "3F4/Questions/3F4_Tripos_2024_Worked_Study_Guide.pdf", evidence: "Viterbi"}
+      - {source: "3F4/Questions/3F4_Tripos_2025_Worked_Study_Guide.pdf", evidence: "Viterbi"}
+      - {source: "3F4/Questions/3F4_Examples_3_Worked_Revision_Guide.pdf", evidence: "Viterbi"}
+
+  - id: meta-tag-confusion
+    category: metadata
+    query: "independence"
+    filters: {tags: ["confusion"]}
+    match: any
+    expected:
+      - {source: "3F7/Notes/Entropy confusions.md", heading: "Pairwise versus mutual independence", evidence: "Pairwise versus mutual independence"}
+      - {source: "3F3/Notes/Stationarity and AR(1).md", evidence: "iid"}
+
+  - id: meta-no-future-files
+    category: metadata
+    query: "conditional entropy"
+    filters: {modified_after: "2999-01-01"}
+    expect_empty: true
+    expected: []
+
+  # ---------------------------------------------------------------- 7. context expansion (answer spans neighbouring chunks/pages)
+  - id: ctx-cond-entropy-weights
+    category: context_expansion
+    query: "where do the conditional probabilities 2/3 and 3/7 in the weighted average H(X|Y)=0.965148 come from?"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [2], evidence: "P(X=0|Y=0)=0.2/0.3=2/3"}
+      - {source: "3F7/Questions/3F7_Examples_1_Worked_Revision_Guide.pdf", pages: [3], evidence: "0.965148"}
+
+  - id: ctx-hamming-fir
+    category: context_expansion
+    query: "magnitude and phase of G(z)=c+(1/2)z^-1+c z^-2 with c=0.08/π, and where the taps came from"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [5], evidence: "Three taps and recurrence"}
+      - {source: "3F1/Questions/3F1_Tripos_2019_Worked_Study_Guide.pdf", pages: [6], evidence: "Put c=0.08/π"}
+
+  - id: ctx-string-receptance
+    category: context_expansion
+    query: "ratio of output displacement to prescribed displacement on the fixed string, and the underlying driving-point receptance"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3C6/Questions/3C6_Tripos_2022_Worked_Study_Guide.pdf", pages: [5], evidence: "Driving-point receptance"}
+      - {source: "3C6/Questions/3C6_Tripos_2022_Worked_Study_Guide.pdf", pages: [6], evidence: "Prescribed motion creates a new span"}
+
+  - id: ctx-beta-interpretation
+    category: context_expansion
+    query: "how the pseudo-count n0, N0 interpretation follows from the Beta posterior after nine coin tosses"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [5], evidence: "Beta(n₀+7, N₀−n₀+4)"}
+      - {source: "3F8/Questions/3F8_Examples_1_Worked_Revision_Guide.pdf", pages: [6], evidence: "Pseudo-count interpretation"}
+
+  - id: ctx-ar1-spectrum-estimate
+    category: context_expansion
+    query: "which AR(1) power spectrum formula is used when the coefficient is estimated as 0.9011?"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [8], evidence: "SX(f)=σ²/[1+a²−2a cos(2πf)]"}
+      - {source: "3F3/Questions/3F3_Examples_2_Worked_Revision_Guide.pdf", pages: [9], evidence: "0.9011406844"}
+
+  - id: ctx-importance-estimator-variance
+    category: context_expansion
+    query: "the variance of the reweighted estimator that the optimal proposal density is derived from"
+    expand: "neighbors:1"
+    match: all
+    expected:
+      - {source: "3M1/Questions/3M1_Tripos_2022_Worked_Study_Guide.pdf", pages: [5], evidence: "μ̃N = (1/N)Σi=1"}
+      - {source: "3M1/Questions/3M1_Tripos_2022_Worked_Study_Guide.pdf", pages: [6], evidence: "The variance-minimising proposal"}
