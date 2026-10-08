@@ -93,7 +93,7 @@ def test_no_tool_can_delete(client):
 
 def test_schemas_expose_filters_and_required_fields(client):
     search = client.tools()["search_academic_memory"].input_schema
-    assert search["required"] == ["query"]
+    assert not search.get("required")  # `query` may be empty when listing the passages carrying a tag
     for field in ("top_k", "module", "document_type", "file_type", "tags", "modified_after", "ai_generated", "mode", "expand"):
         assert field in search["properties"], field
     create = client.tools()["create_note"].input_schema

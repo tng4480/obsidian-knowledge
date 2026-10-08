@@ -172,7 +172,9 @@ class Indexer:
             tags=list(content.tags),
             links=list(content.links),
         )
-        return ParsedDocument(document=document, sections=content.sections, frontmatter=content.frontmatter)
+        return ParsedDocument(
+            document=document, sections=content.sections, frontmatter=content.frontmatter, note_tags=content.note_tags
+        )
 
     def index_file(self, df: DiscoveredFile, content_hash: str | None = None) -> int:
         """Extract, chunk, embed and write one file. Returns the number of chunks written."""

@@ -42,6 +42,9 @@ class _Piece:
     pages: list[int] = field(default_factory=list)
     heading_inline: list[tuple[str, int]] = field(default_factory=list)  # (title, offset in texts)
     tokens: int = 0
+    # Inline #tags of the blocks this piece is made of. Blocks with different tags are never packed together, so a
+    # tag filter returns exactly the tagged passage and not the paragraphs that happen to sit next to it.
+    tags: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -68,6 +71,7 @@ class Chunker:
     def chunk_document(self, parsed: ParsedDocument) -> list[Chunk]:
         doc = parsed.document
         by_id = {s.section_id: s for s in parsed.sections}
+        note_tags = list(parsed.note_tags if parsed.note_tags is not None else doc.tags)
 
         pieces: list[_Piece] = []
         for section in parsed.sections:
@@ -99,7 +103,7 @@ class Chunker:
                     page_end=max(pages) if pages else None,
                     token_count=self.count(text),
                     ai_generated=doc.ai_generated,
-                    tags=list(doc.tags),
+                    tags=list(dict.fromkeys([*note_tags, *piece.tags])),
                     links=extract_links(text),
                 )
             )
@@ -115,7 +119,7 @@ class Chunker:
             return [(text, block.page)]
         if block.atomic:
             return [(t, block.page) for t in self._split_atomic(text, block.kind)]
-        return [(t, block.page) for t in self._split_prose(text)]
+        return [(t, block.page) for t in self._split_prose(text)]  # every unit of a block inherits its tags
 
     def _split_prose(self, text: str) -> list[str]:
         overlap = self.overlap_tokens if self.overlap_tokens > 0 else None
@@ -154,15 +158,15 @@ class Chunker:
         return out
 
     def _pack_section(self, section: Section) -> list[_Piece]:
-        units: list[tuple[str, int | None]] = []
+        units: list[tuple[str, int | None, tuple[str, ...]]] = []
         for block in section.blocks:
-            units.extend(self._expand_block(block))
+            units.extend((text, page, block.tags) for text, page in self._expand_block(block))
 
         pieces: list[_Piece] = []
         cur: _Piece | None = None
-        for text, page in units:
+        for text, page, tags in units:
             t = self.count(text)
-            if cur is not None and cur.tokens + t <= self.max_tokens:
+            if cur is not None and cur.tags == tags and cur.tokens + t <= self.max_tokens:
                 cur.texts.append(text)
                 if page is not None:
                     cur.pages.append(page)
@@ -170,7 +174,7 @@ class Chunker:
                 continue
             if cur is not None:
                 pieces.append(cur)
-            cur = _Piece(section=section, texts=[text], pages=[page] if page is not None else [], tokens=t)
+            cur = _Piece(section=section, texts=[text], pages=[page] if page is not None else [], tokens=t, tags=tags)
         if cur is not None:
             pieces.append(cur)
         return pieces
@@ -195,7 +199,8 @@ class Chunker:
             if merged:
                 prev = merged[-1]
                 if (
-                    (prev.tokens < self.min_tokens or piece.tokens < self.min_tokens)
+                    prev.tags == piece.tags
+                    and (prev.tokens < self.min_tokens or piece.tokens < self.min_tokens)
                     and self._related(prev.section, piece.section, by_id)
                 ):
                     candidate = self._combine(prev, piece)
@@ -211,7 +216,7 @@ class Chunker:
         if b.section.section_id != a.section.section_id and b.section.title:
             heading_inline.append((b.section.title, len(texts)))
         texts.extend(b.texts)
-        out = _Piece(section=a.section, texts=texts, pages=a.pages + b.pages, heading_inline=heading_inline)
+        out = _Piece(section=a.section, texts=texts, pages=a.pages + b.pages, heading_inline=heading_inline, tags=a.tags)
         out.tokens = self.count(self._render(out))
         return out
 

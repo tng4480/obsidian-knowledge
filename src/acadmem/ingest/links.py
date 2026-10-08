@@ -6,7 +6,9 @@ import re
 
 _WIKILINK = re.compile(r"!?\[\[([^\]\n]+?)\]\]")
 _MDLINK = re.compile(r"(?<!!)\[[^\]\n]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
-_TAG = re.compile(r"(?<![\w/#&\[(])#([A-Za-z][\w/-]*)")
+# Obsidian tags: letters, digits, "_", "-" and "/" (nesting), with at least one non-digit, so "#3F7" and "#3f7/huffman"
+# are tags but "#123" (an issue number) is not. The lookbehind skips URL anchors, "&#123;" and "##".
+_TAG = re.compile(r"(?<![\w/#&\[(])#((?=[\w/-]*[^\W\d])[\w/-]+)")
 _FENCE = re.compile(r"^(\s*)(`{3,}|~{3,}).*?(?:^\s*\2[`~]*\s*$|\Z)", re.M | re.S)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _MATH_BLOCK = re.compile(r"\$\$.*?\$\$", re.S)
@@ -54,6 +56,14 @@ def extract_inline_tags(text: str) -> list[str]:
     for m in _TAG.finditer(stripped):
         seen.setdefault(m.group(1), None)
     return list(seen)
+
+
+def is_tag_only(text: str) -> bool:
+    """True when ``text`` is nothing but one or more ``#tags`` (a "tag line" such as ``#revisit #exam``)."""
+    stripped = strip_code_and_math(text)
+    if not _TAG.search(stripped):
+        return False
+    return not _TAG.sub(" ", stripped).strip(" \t\r\n,;.")
 
 
 _WIKI_TEXT = re.compile(r"\[\[([^\]|\n]+)\|([^\]\n]+)\]\]")

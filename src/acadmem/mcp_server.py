@@ -40,6 +40,8 @@ Semantic memory over the user's Obsidian study vault (lecture handouts, worked s
 * For any question about the user's coursework or notes, call search_academic_memory first. Do not ask the user
   which file to open. Use filters (module, document_type, file_type, path_prefix, tags, dates, ai_generated) when the
   question names a course, paper type or year.
+* Tags: the user marks passages in Obsidian with inline #tags (a tag tags the paragraph it is written in; frontmatter
+  tags cover a whole note). When they ask about something they tagged or marked, pass it as the `tags` filter.
 * Always cite sources as `source` + `page` (PDF) or `source` + `section` (Markdown). Use the retrieved `text` verbatim
   when quoting. If the results do not answer the question, say so rather than guessing.
 * If a hit looks truncated or only half of an answer, call get_context with its chunk_id.
@@ -198,6 +200,8 @@ class AcademicMemoryService:
             }.items()
             if v not in (None, "", [])
         }
+        if not (query or "").strip() and "tags" in filters:
+            return self._browse_tagged(filters, top_k, expand)
         try:
             hits = self.searcher.search(query, top_k=top_k, filters=filters, mode=mode)
         except IndexMismatchError as exc:
@@ -210,6 +214,43 @@ class AcademicMemoryService:
         out: dict[str, Any] = {"query": query, "mode": used_mode, "filters": filters, "count": len(results), "results": results}
         if not results:
             out["hint"] = "No matches. Try broader wording, drop a filter, or check list_indexed_sources / index_status."
+        return out
+
+    BROWSE_DEFAULT = 20
+    BROWSE_MAX = 100
+
+    def _browse_tagged(self, filters: dict[str, Any], top_k: int | None, expand: str | None) -> dict[str, Any]:
+        """List the passages matching a tag filter (no query), in vault order, instead of ranking them by similarity.
+
+        This answers "show me everything I tagged #revisit", where there is nothing to rank by and a similarity
+        search would cap the answer at the few nearest chunks.
+        """
+        if not self.index.exists():
+            raise ValueError("No index yet. Run `acadmem index` (or wait for the server's first sync) and retry.")
+        limit = max(1, min(int(top_k) if top_k is not None else self.BROWSE_DEFAULT, self.BROWSE_MAX))
+        try:
+            rows = self.index.scan(SearchFilters.from_mapping(filters).to_sql(), columns=CHUNK_COLUMNS)
+        except IndexMismatchError as exc:
+            raise ValueError(str(exc)) from exc
+        rows.sort(key=lambda r: (r["source_path"], r.get("chunk_index") or 0))
+        results = []
+        for rank, row in enumerate(rows[:limit], 1):
+            item = {"rank": rank, **format_row(row)}
+            if expand:
+                item["context"] = [format_piece(p) for p in self.expander.expand(row, expand).pieces]
+            results.append(item)
+        out: dict[str, Any] = {
+            "query": "",
+            "mode": "browse",
+            "filters": filters,
+            "count": len(results),
+            "total_matches": len(rows),
+            "results": results,
+        }
+        if len(rows) > limit:
+            out["hint"] = f"Showing {limit} of {len(rows)} matching passages in vault order; raise top_k (max {self.BROWSE_MAX}) or add filters such as module."
+        if not rows:
+            out["hint"] = "Nothing carries that tag. Tags are case-insensitive and written without spaces (e.g. #revisit); check list_indexed_sources(tags=...)."
         return out
 
     def get_source_chunk(self, chunk_id: str) -> dict[str, Any]:
@@ -457,8 +498,8 @@ def build_server(service: AcademicMemoryService):
     @server.tool(annotations=read_only)
     @_tool_errors
     def search_academic_memory(
-        query: str,
-        top_k: int = 5,
+        query: str = "",
+        top_k: int | None = None,
         module: Names = None,
         document_type: Names = None,
         file_type: Names = None,
@@ -485,6 +526,11 @@ def build_server(service: AcademicMemoryService):
         module, e.g. "Questions", "Notes", "Handouts"), `file_type` ("pdf" or "md"), `path_prefix` (a folder or file
         prefix such as "3F4/Questions/3F4_Tripos_2023"), `tags`, `modified_after` / `modified_before` (ISO dates),
         `ai_generated` (true = only AI-written notes, false = only human material).
+        `tags` (e.g. "revisit", "#3F7/huffman", case-insensitive, no spaces) returns the passages the user marked:
+        an inline #tag written in a paragraph (or list, table, ...) tags just that paragraph, while a tag in a
+        note's frontmatter tags every passage of the note. For "show me everything I tagged #revisit" leave `query`
+        empty: the tagged passages are then listed in vault order (default 20, up to 100 with `top_k`) instead of
+        being ranked. With a `query` as well, the tagged passages are ranked by relevance to it.
         `expand` adds surrounding context to every hit, e.g. "neighbors:1", "section", "parent", "pages:1" ("+" joins them).
         """
         return service.search(
@@ -543,7 +589,8 @@ def build_server(service: AcademicMemoryService):
 
             `path` is relative to the vault root, e.g. "3F7/Notes/Entropy summary.md" (".md" is added if missing;
             folders are created). The note is saved with `ai_generated: true` frontmatter and re-indexed immediately.
-            Only .md files inside the vault can be written.
+            Only .md files inside the vault can be written. `tags` are note-level (frontmatter, apply to every passage);
+            to tag just one paragraph, write `#tag` inside that paragraph's text in `content`.
             """
             return service.create_note(path, content, tags)
 

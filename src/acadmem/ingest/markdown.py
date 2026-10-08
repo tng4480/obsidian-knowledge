@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -20,7 +21,7 @@ import frontmatter
 from markdown_it import MarkdownIt
 
 from ..models import CALLOUT, CODE, LIST, MATH, PARAGRAPH, QUOTE, TABLE, Block, ParsedContent
-from .links import clean_inline, extract_inline_tags, extract_links, strip_code_and_math
+from .links import clean_inline, extract_inline_tags, extract_links, is_tag_only, strip_code_and_math
 from .sections import SectionBuilder
 
 _FENCE_OPEN = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
@@ -143,6 +144,11 @@ def _normalize_tags(raw: Any) -> list[str]:
     return tags
 
 
+def _union(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    """Order-preserving union of tag tuples."""
+    return tuple(dict.fromkeys(t for g in groups for t in g))
+
+
 def _truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "yes", "1"}
@@ -159,11 +165,27 @@ def parse_markdown(text: str, fallback_title: str = "") -> ParsedContent:
         meta, body = {}, text
 
     builder = SectionBuilder(root_title=str(meta.get("title") or fallback_title))
+    # Inline #tags belong to the block (paragraph, list, table, ...) they are written in. Two conveniences:
+    #   * a line holding only tags ("#revisit") tags the block directly above it;
+    #   * a tag on a heading line, or a tag line at the very top of a section, tags the first block below it.
+    pending: tuple[str, ...] = ()
     for kind, text_or_title, level in iter_markdown_blocks(body):
         if kind == HEADING:
             builder.open(text_or_title, level or 1)
-        else:
-            builder.add(Block(text_or_title, kind))
+            pending = tuple(_normalize_tags(extract_inline_tags(text_or_title)))
+            continue
+        own = tuple(_normalize_tags(extract_inline_tags(text_or_title)))
+        if own and kind == PARAGRAPH and is_tag_only(text_or_title):
+            blocks = builder.current.blocks
+            if blocks and not pending:
+                blocks[-1] = replace(blocks[-1], tags=_union(blocks[-1].tags, own))
+                builder.add(Block(text_or_title, kind, tags=blocks[-1].tags))  # same tags: stays in the same chunk
+            else:
+                pending = _union(pending, own)
+                builder.add(Block(text_or_title, kind, tags=pending))
+            continue
+        builder.add(Block(text_or_title, kind, tags=_union(own, pending)))
+        pending = ()
 
     sections = builder.build()
 
@@ -176,13 +198,15 @@ def parse_markdown(text: str, fallback_title: str = "") -> ParsedContent:
     title = title or fallback_title
 
     prose = strip_code_and_math(body)
-    tags = _normalize_tags([*_normalize_tags(meta.get("tags")), *extract_inline_tags(body)])
+    note_tags = _normalize_tags(meta.get("tags"))
+    tags = _normalize_tags([*note_tags, *extract_inline_tags(body)])
     return ParsedContent(
         title=title,
         sections=sections,
         links=extract_links(prose),
         tags=tags,
         frontmatter=meta,
+        note_tags=note_tags,
     )
 
 

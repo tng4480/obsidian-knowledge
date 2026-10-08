@@ -71,6 +71,34 @@ background. By default the server catches up on changes at start and then watche
 | `append_to_note` | append to an existing note |
 | `replace_section` | replace the body of one heading in an existing note |
 
+### Tagging passages
+
+Mark any part of a note with an ordinary Obsidian `#tag` and Codex can retrieve exactly those passages later.
+
+```markdown
+## Huffman coding
+
+Huffman codes are built by merging the two least likely symbols.
+
+I still don't see why the tree is optimal. #revisit      <- tags this paragraph only
+```
+
+* **A tag covers the paragraph it is written in.** The same goes for a list, table, callout or quote: the whole block.
+  Neighbouring paragraphs are *not* tagged, and a tagged paragraph is kept as its own passage, so a tag search returns it
+  alone with its note, heading and page-free provenance.
+* **A tag on a line by itself tags the paragraph above it:** put `#exam` (or `#exam #revisit`) on its own line under the
+  paragraph. At the very top of a section, a tag line tags the paragraph below it, and a tag on a heading line
+  (`## Huffman #revisit`) tags the first paragraph under that heading.
+* **Tags in the note's frontmatter (`tags: [revision]`) cover the whole note.**
+* Tags are case-insensitive, have no spaces, and may nest (`#3F7/huffman`) or look like module codes (`#3F7`).
+  Purely numeric ones (`#123`) and anything inside code or math are not tags.
+* Ask Codex things like *"show me everything I tagged #revisit in 3F7"* (it lists the tagged passages in vault order) or
+  *"explain the passages I tagged #exam about entropy"* (it ranks the tagged passages by relevance). From the CLI,
+  `acadmem search "entropy" --tag exam`.
+* The index follows your edits: add or remove a tag in Obsidian and it is picked up within a second or two while the
+  server (or `acadmem watch`) is running. Notes indexed before this feature existed keep their old note-level tags until
+  you run `acadmem rebuild`. PDFs cannot carry tags.
+
 ### Reading `score`
 
 Every hit carries the same `score` in every mode (`vector`, `fts`, `hybrid`): the **cosine similarity between the
@@ -181,7 +209,7 @@ Metrics: Recall@k, source-level recall, MRR, metadata-filter correctness, contex
 | --- | --- | --- | --- |
 | Recall@5 | 93.3% | 92.2% | **100%** |
 | Source recall@5 | 95.6% | 94.4% | **100%** |
-| MRR | 0.777 | 0.823 | **0.830** |
+| MRR | 0.777 | 0.823 | **0.846** |
 | Metadata filter correctness | 100% | 100% | 100% |
 | Avg latency | ~110 ms | ~45 ms | ~55 ms |
 

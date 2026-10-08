@@ -1,4 +1,4 @@
-"""Retrieval: vector / full-text / hybrid search with metadata prefiltering.
+﻿"""Retrieval: vector / full-text / hybrid search with metadata prefiltering.
 
 Filters are compiled into a SQL predicate that LanceDB applies *before* ranking (``prefilter=True``),
 so ``top_k`` always means "the k best chunks *among those allowed*", never "k best, then thrown away".
@@ -213,6 +213,8 @@ def row_to_result(row: dict[str, Any], rank_score: float, rank: int, mode: str, 
 
 
 # --------------------------------------------------------------------------- searcher
+HYBRID_POOL = 20  # candidates fetched per leg (vector, keyword) before rank fusion
+
 class Searcher:
     def __init__(self, config: Config, embedder: Embedder | None = None, index: VectorIndex | None = None) -> None:
         self.config = config
@@ -299,8 +301,11 @@ class Searcher:
         )
         if where:
             q = q.where(where, prefilter=True)
-        rows = q.limit(k).to_list()
-        # Reciprocal-rank fusion decides the order (unchanged); the reported score is the cosine similarity.
+        # LanceDB applies the limit to *each* leg before fusing, so fusing only `k` candidates per list makes a small
+        # top_k fragile (the vector #1 and keyword #1 tie at 1/61 and the winner is arbitrary, so top_k=1 could
+        # disagree with the first result of top_k=5). Fuse over a deeper pool, then keep the best k.
+        rows = q.limit(max(k, HYBRID_POOL)).to_list()[:k]
+        # Reciprocal-rank fusion decides the order; the reported score is the cosine similarity.
         return [
             row_to_result(r, float(r.get("_relevance_score", 0.0)), i + 1, "hybrid", self._similarity(r, qvec))
             for i, r in enumerate(rows)

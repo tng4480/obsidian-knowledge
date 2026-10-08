@@ -55,6 +55,8 @@ class Block:
     text: str
     kind: str = PARAGRAPH
     page: int | None = None  # 1-based; None for formats without pages
+    # Inline #tags that apply to this block only (Markdown). Note-level tags (frontmatter) live on the document.
+    tags: tuple[str, ...] = ()
 
     @property
     def atomic(self) -> bool:
@@ -94,9 +96,11 @@ class ParsedContent:
     title: str
     sections: list[Section]
     links: list[str] = field(default_factory=list)
-    tags: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)  # every tag in the file (frontmatter + inline): the document's tags
     frontmatter: dict[str, Any] = field(default_factory=dict)
     page_count: int | None = None
+    # Frontmatter tags only: these apply to every chunk. ``None`` means "use ``tags``" (formats without inline tags).
+    note_tags: list[str] | None = None
 
 
 @dataclass
@@ -124,6 +128,7 @@ class ParsedDocument:
     document: Document
     sections: list[Section]
     frontmatter: dict[str, Any] = field(default_factory=dict)
+    note_tags: list[str] | None = None  # see ParsedContent.note_tags
 
     def section(self, section_id: str) -> Section | None:
         for s in self.sections:

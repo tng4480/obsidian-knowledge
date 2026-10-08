@@ -29,6 +29,28 @@ def test_each_mode_finds_the_relevant_chunk(searcher, mode):
     assert [h.rank for h in hits] == list(range(1, len(hits) + 1))
 
 
+QUERIES = ["memoryless property of a markov chain", "posterior probability of disease", "independence of events", "alpha beta"]
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("query", QUERIES)
+def test_a_smaller_top_k_is_a_prefix_of_a_larger_one(searcher, mode, query):
+    """top_k=1 must return what top_k=8 ranks first. (Hybrid used to fuse only k candidates per list, so a
+    vector #1 and a keyword #1 tied and the winner was arbitrary: top_k=1 could disagree with top_k=5.)"""
+    full = [h.chunk_id for h in searcher.search(query, top_k=8, mode=mode)]
+    for k in (1, 2, 3, 5):
+        assert [h.chunk_id for h in searcher.search(query, top_k=k, mode=mode)] == full[:k], (mode, query, k)
+
+
+def test_hybrid_top_1_prefers_the_chunk_both_methods_agree_on(vault, indexer, config, fake_embedder):
+    """Regression: a note that is the only keyword match must win top_k=1 over a chunk that is merely the nearest vector."""
+    (vault / "3B1" / "Notes").mkdir(parents=True, exist_ok=True)
+    (vault / "3B1" / "Notes" / "wombats.md").write_text("# Fauna\n\nAll about wombats and marsupials.\n", encoding="utf-8")
+    indexer.run(full=True)
+    searcher = Searcher(config, embedder=fake_embedder)
+    assert searcher.search("wombats marsupials", top_k=1, mode="hybrid")[0].source_path == "3B1/Notes/wombats.md"
+
+
 def test_results_carry_full_provenance(searcher):
     top = searcher.search("independent events probability of the other", top_k=3)[0]
     assert top.source_path == "3B1/Handouts/Week 5 - Probability.pdf"
