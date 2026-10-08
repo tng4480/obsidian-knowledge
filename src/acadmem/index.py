@@ -9,6 +9,7 @@ Tables
 ``chunks``     one row per chunk: provenance + text + embedding vector
 ``documents``  one row per indexed file (also the incremental-indexing manifest)
 ``errors``     last failure per file (cleared when the file next indexes cleanly)
+``pdf_tags``   tagged lines in notes that point into PDFs (their tags are applied to those PDFs' chunks afterwards)
 """
 
 from __future__ import annotations
@@ -27,13 +28,14 @@ import pyarrow as pa
 from lancedb.index import FTS
 
 from .config import Config
-from .models import Chunk, Document
+from .models import Chunk, Document, PdfRef
 
 SCHEMA_VERSION = 2  # 2: added chunks.search_text (heading breadcrumb + body) and moved the FTS index onto it
 FTS_COLUMN = "search_text"
 CHUNKS = "chunks"
 DOCUMENTS = "documents"
 ERRORS = "errors"
+PDF_TAGS = "pdf_tags"
 
 
 class IndexMismatchError(RuntimeError):
@@ -103,6 +105,20 @@ ERRORS_SCHEMA = pa.schema(
 )
 
 
+PDF_TAGS_SCHEMA = pa.schema(
+    [
+        pa.field("document_id", pa.string(), nullable=False),  # the note holding the tagged line
+        pa.field("source_path", pa.string(), nullable=False),
+        pa.field("target", pa.string()),  # the PDF as written in the note
+        pa.field("page_start", pa.int32()),
+        pa.field("page_end", pa.int32()),
+        pa.field("quote", pa.string()),
+        pa.field("quote_is_weak", pa.bool_()),
+        pa.field("tags", pa.list_(pa.string())),
+    ]
+)
+
+
 def chunk_to_row(chunk: Chunk) -> dict[str, Any]:
     if chunk.embedding is None:
         raise ValueError(f"chunk {chunk.chunk_id} has no embedding")
@@ -147,6 +163,7 @@ class VectorIndex:
         self._chunks = None
         self._documents = None
         self._errors = None
+        self._pdf_tags = None
 
     # ---------------------------------------------------------------- lifecycle
     @property
@@ -192,6 +209,8 @@ class VectorIndex:
             self.db.create_table(DOCUMENTS, schema=DOCUMENTS_SCHEMA)
         if ERRORS not in names:
             self.db.create_table(ERRORS, schema=ERRORS_SCHEMA)
+        if PDF_TAGS not in names:  # added after schema v2: an additive table, so older indexes just gain it
+            self.db.create_table(PDF_TAGS, schema=PDF_TAGS_SCHEMA)
         if meta is None:
             self.config.index_dir.mkdir(parents=True, exist_ok=True)
             self.meta_path.write_text(
@@ -210,10 +229,11 @@ class VectorIndex:
         self._chunks = self.db.open_table(CHUNKS)
         self._documents = self.db.open_table(DOCUMENTS)
         self._errors = self.db.open_table(ERRORS)
+        self._pdf_tags = self.db.open_table(PDF_TAGS)
 
     def reset(self) -> None:
         """Delete the entire derived index (full rebuild starts from here)."""
-        self._chunks = self._documents = self._errors = None
+        self._chunks = self._documents = self._errors = self._pdf_tags = None
         self._db = None
         if self.config.db_path.exists():
             shutil.rmtree(self.config.db_path, ignore_errors=True)
@@ -242,8 +262,16 @@ class VectorIndex:
     def errors_table(self):
         return self._open(ERRORS)
 
+    @property
+    def pdf_tags_table(self):
+        if self._pdf_tags is None:
+            if PDF_TAGS not in self._table_names():  # an index created before PDF tagging existed
+                self.db.create_table(PDF_TAGS, schema=PDF_TAGS_SCHEMA)
+            self._pdf_tags = self.db.open_table(PDF_TAGS)
+        return self._pdf_tags
+
     # ------------------------------------------------------------------ writes
-    def write_document(self, doc: Document, chunks: list[Chunk], size: int = 0) -> None:
+    def write_document(self, doc: Document, chunks: list[Chunk], size: int = 0, pdf_refs: list[PdfRef] | None = None) -> None:
         """Atomically-ish replace everything stored for ``doc`` (delete old rows, add new)."""
         self.chunks.delete(f"document_id = {sql_quote(doc.id)}")
         if chunks:
@@ -252,11 +280,68 @@ class VectorIndex:
         doc.chunk_count = len(chunks)
         doc.indexed_at = time.time()
         self.documents.add([document_to_row(doc, size)])
+        self.set_pdf_refs(doc.id, doc.source_path, pdf_refs or [])
         self.clear_error(doc.source_path)
+
+    def set_pdf_refs(self, document_id: str, source_path: str, refs: list[PdfRef]) -> None:
+        """Replace the tagged PDF lines recorded for one note."""
+        table = self.pdf_tags_table
+        table.delete(f"document_id = {sql_quote(document_id)}")
+        if refs:
+            table.add(
+                [
+                    {
+                        "document_id": document_id,
+                        "source_path": source_path,
+                        "target": r.target,
+                        "page_start": r.page_start,
+                        "page_end": r.page_end,
+                        "quote": r.quote,
+                        "quote_is_weak": r.quote_is_weak,
+                        "tags": list(r.tags),
+                    }
+                    for r in refs
+                ]
+            )
+
+    def pdf_ref_rows(self) -> list[dict[str, Any]]:
+        rows = self.pdf_tags_table.search().limit(1_000_000).to_list()
+        return sorted(rows, key=lambda r: (r["source_path"], r["target"] or "", r["page_start"] or 0, r["quote"] or ""))
+
+    def replace_chunk_tags(self, new_tags: dict[str, list[str]]) -> int:
+        """Set ``tags`` on the given chunks (``chunk_id -> tags``) in place, keeping vectors and everything else."""
+        if not new_tags:
+            return 0
+        ids = list(new_tags)
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(ids), 200):
+            part = ids[start : start + 200]
+            where = "chunk_id IN (" + ", ".join(sql_quote(i) for i in part) + ")"
+            rows.extend(self.chunks.search().where(where, prefilter=True).limit(len(part)).to_list())
+        for row in rows:
+            row["tags"] = list(new_tags[row["chunk_id"]])
+            row.pop("_rowid", None)
+        schema = self.chunks.schema
+        data = pa.Table.from_pylist([{k: r.get(k) for k in schema.names} for r in rows], schema=schema)
+        self.chunks.merge_insert("chunk_id").when_matched_update_all().execute(data)
+        return len(rows)
+
+    def replace_document_tags(self, new_tags: dict[str, list[str]]) -> None:
+        """Set ``tags`` on the given documents (``document_id -> tags``) in place."""
+        if not new_tags:
+            return
+        where = "id IN (" + ", ".join(sql_quote(i) for i in new_tags) + ")"
+        rows = self.documents.search().where(where, prefilter=True).limit(len(new_tags)).to_list()
+        for row in rows:
+            row["tags"] = list(new_tags[row["id"]])
+        schema = self.documents.schema
+        data = pa.Table.from_pylist([{k: r.get(k) for k in schema.names} for r in rows], schema=schema)
+        self.documents.merge_insert("id").when_matched_update_all().execute(data)
 
     def delete_document(self, document_id: str, source_path: str | None = None) -> None:
         self.chunks.delete(f"document_id = {sql_quote(document_id)}")
         self.documents.delete(f"id = {sql_quote(document_id)}")
+        self.pdf_tags_table.delete(f"document_id = {sql_quote(document_id)}")
         if source_path:
             self.clear_error(source_path)
 

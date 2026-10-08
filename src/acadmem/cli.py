@@ -1,4 +1,4 @@
-"""Command line interface: ``acadmem index | rebuild | watch | status | search | eval``."""
+"""Command line interface: ``acadmem index | rebuild | watch | status | pdf-tags | search | eval``."""
 
 from __future__ import annotations
 
@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("status", "Show what is indexed, and any files that failed"),
     ]:
         _add_common(sub.add_parser(name, help=help_))
+
+    t = sub.add_parser("pdf-tags", help="List the tag lines in your notes that tag PDF passages, and which could not be applied")
+    _add_common(t)
+    t.add_argument("--json", action="store_true", help="Machine-readable output")
 
     w = sub.add_parser("watch", help="Keep the index up to date while you work in Obsidian")
     _add_common(w)
@@ -115,6 +119,35 @@ def _cmd_status(args: argparse.Namespace) -> int:
     for e in errors:
         print(f"  {e['source_path']}: {e['error_type']}: {e['message'][:200]}")
     return 0
+
+
+def _cmd_pdf_tags(args: argparse.Namespace) -> int:
+    from .index import VectorIndex
+    from .pdf_tags import evaluate_pdf_tags
+
+    cfg = _config(args)
+    index = VectorIndex(cfg)
+    if not index.exists():
+        print("No index yet. Run `acadmem index`.")
+        return 1
+    report, _, _ = evaluate_pdf_tags(index)
+    if args.json:
+        print(json.dumps([e.to_dict() for e in report.entries], indent=2, ensure_ascii=False))
+        return 0
+    if not report.entries:
+        print("No notes tag PDF passages yet. In a note, write e.g.:  [[Week 5.pdf#page=3]] \"a few words\" #revisit")
+        return 0
+    for e in report.entries:
+        where = f"p.{e.page}" if e.page else "whole PDF"
+        what = f' "{_snippet(e.quote, 50)}"' if e.quote else ""
+        mark = "ok " if e.ok else "!! "
+        print(f"{mark}{' '.join('#' + t for t in e.tags):20} {e.pdf or e.target} ({where}){what}  <- {e.note}")
+        if e.status != "applied":
+            print(f"      {e.status}: {e.detail}")
+        else:
+            print(f"      tags {e.sections} section(s)")
+    print(f"{len(report.entries) - len(report.problems)} of {len(report.entries)} tag line(s) applied.")
+    return 1 if report.problems else 0
 
 
 def _cmd_watch(args: argparse.Namespace) -> int:
@@ -222,6 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "index": lambda a: _cmd_index(a, full=False),
         "rebuild": lambda a: _cmd_index(a, full=True),
         "status": _cmd_status,
+        "pdf-tags": _cmd_pdf_tags,
         "watch": _cmd_watch,
         "search": _cmd_search,
         "eval": _cmd_eval,

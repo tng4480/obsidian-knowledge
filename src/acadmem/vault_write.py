@@ -33,6 +33,8 @@ import frontmatter
 
 from .config import Config
 from .ingest.discovery import FileUnavailableError, read_bytes, to_source_path
+from .ingest.markdown import parse_markdown
+from .pdf_tags import pages_text, find_passages, load_chunks, normalize_words, resolve_pdf
 
 if TYPE_CHECKING:  # pragma: no cover
     from .indexer import Indexer
@@ -45,6 +47,10 @@ _ATX = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 MAX_PATH_CHARS = 240
 MAX_PART_CHARS = 120
+MAX_QUOTE_CHARS = 400
+_TAG_NAME = re.compile(r"(?=[\w/-]*[^\W\d])[\w/-]+")
+_QUOTE_MARKS = re.compile("[\"\u201c\u201d]")
+_QUOTE_SYNTAX = re.compile(r"[#$`\[\]|\\]")  # would be read as a tag, math, code or link inside the written line
 
 
 # --------------------------------------------------------------------------- errors / results
@@ -73,6 +79,9 @@ class WriteConflict(WriteError): ...
 class ContentRejected(WriteError): ...
 
 
+class PdfPassageNotFound(WriteError): ...
+
+
 @dataclass
 class WriteResult:
     path: str  # vault-relative source path
@@ -85,6 +94,29 @@ class WriteResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class PdfTagResult:
+    pdf: str  # the indexed PDF that was tagged
+    note: str  # the note that now holds the tag line
+    line: str  # the line that was (or already had been) written
+    sections: list[dict]  # the PDF sections the tag applies to
+    already_present: bool = False  # the same line was already in the note, so nothing was written
+    write: WriteResult | None = None
+
+    def to_dict(self) -> dict:
+        out = {
+            "pdf": self.pdf,
+            "note": self.note,
+            "line": self.line,
+            "sections_tagged": len(self.sections),
+            "sections": self.sections,
+            "already_present": self.already_present,
+        }
+        if self.write is not None:
+            out["write"] = self.write.to_dict()
+        return out
 
 
 @dataclass(frozen=True)
@@ -465,6 +497,87 @@ class VaultWriter:
         nbytes = self._atomic_replace(absolute, new_text, stat_key)
         return self._result(source_path, action, nbytes, ai=is_ai, backup=backup)
 
+    def tag_pdf_passage(
+        self,
+        pdf: str,
+        tags: list[str],
+        page: int | None = None,
+        quote: str | None = None,
+        note_path: str | None = None,
+    ) -> PdfTagResult:
+        """Tag part of an indexed PDF. The PDF is never touched: a tag line is written into a note instead.
+
+        ``page`` and ``quote`` narrow what is tagged (neither: the whole PDF; ``page``: the sections on that page;
+        ``quote``: the section containing those words). The line is checked against the index *before* anything is
+        written, so a quote that does not match is refused rather than saved as a tag that silently does nothing.
+        """
+        self._check_enabled()
+        if self.indexer is None:
+            raise WriteError("Tagging PDF passages needs the index, which this writer was created without.")
+        index = self.indexer.index
+        if not index.exists():
+            raise WriteError("No index yet; tagging a PDF passage needs the PDF to be indexed first.")
+
+        names: list[str] = []
+        for tag in tags if isinstance(tags, list) else [tags]:
+            name = str(tag).strip().lstrip("#").lower()
+            if not name:
+                continue
+            if not _TAG_NAME.fullmatch(name):
+                raise ContentRejected(
+                    f"{tag!r} is not a valid tag: use letters, digits, '_', '-' and '/' with no spaces, "
+                    "and at least one non-digit (e.g. revisit, 3F7/huffman)"
+                )
+            if name not in names:
+                names.append(name)
+        if not names:
+            raise ContentRejected("give at least one tag")
+
+        docs = index.list_documents("file_type = 'pdf'")
+        doc, reason = resolve_pdf(pdf, docs)
+        if doc is None:
+            stem = Path(str(pdf).replace("\\", "/")).stem.lower()
+            near = [d["source_path"] for d in docs if stem and stem in d["source_path"].lower()][:5]
+            hint = f" Did you mean: {', '.join(near)}?" if near else " Use list_indexed_sources(file_type='pdf') to see the PDFs."
+            raise PdfPassageNotFound(f"Cannot tag {pdf!r}: {reason}.{hint}")
+
+        if page is not None:
+            if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                raise ContentRejected("page must be a whole number, 1 for the first page")
+            if doc.get("page_count") and page > int(doc["page_count"]):
+                raise ContentRejected(f"{doc['source_path']} has only {doc['page_count']} pages, not {page}")
+
+        clean_quote = None
+        if quote is not None and str(quote).strip():
+            clean_quote = re.sub(r"\s+", " ", _QUOTE_SYNTAX.sub(" ", _QUOTE_MARKS.sub("'", str(quote)))).strip()
+            if len(clean_quote) > MAX_QUOTE_CHARS:
+                raise ContentRejected(f"quote is too long ({len(clean_quote)} characters, max {MAX_QUOTE_CHARS}): quote its distinctive opening words")
+            if not normalize_words(clean_quote):
+                raise ContentRejected("quote has no words in it")
+
+        match = find_passages(load_chunks(index, doc), page, page, clean_quote)
+        if not match.ok:
+            raise PdfPassageNotFound(f"Nothing was tagged: {match.reason}.")
+
+        link = f"[[{doc['source_path']}" + (f"#page={page}" if page else "") + "]]"
+        line = " ".join([link, *([f'"{clean_quote}"'] if clean_quote else []), *(f"#{t}" for t in names)])
+        read_back = parse_markdown(line).pdf_refs  # the line must mean to the indexer what it means to us
+        if not read_back or (clean_quote and normalize_words(read_back[0].quote or "") != normalize_words(clean_quote)):
+            raise ContentRejected("that quote cannot be written as a tag line; try fewer or simpler words")
+
+        note = note_path or (f"{doc['module']}/PDF tags.md" if doc.get("module") else "PDF tags.md")
+        absolute, note_source = self.resolve(note, for_create=True)
+        sections = [{"section": p.heading, "page": p.page_start, "pages": pages_text(p.page_start, p.page_end), "chunk_id": p.chunk_id} for p in match.passages]
+        if absolute.exists():
+            text, _ = self._read_existing(absolute, note_source)
+            if line in text:
+                return PdfTagResult(doc["source_path"], note_source, line, sections, already_present=True)
+            written = self.append_to_note(note_source, line)
+        else:
+            intro = "# PDF tags\n\nEach line below tags a passage of a PDF: the tag applies to the section the link points at.\n\n"
+            written = self.create_note(note_source, intro + line + "\n")
+        return PdfTagResult(doc["source_path"], note_source, line, sections, write=written)
+
 
 __all__ = [
     "VaultWriter",
@@ -477,6 +590,8 @@ __all__ = [
     "AmbiguousSection",
     "WriteConflict",
     "ContentRejected",
+    "PdfPassageNotFound",
+    "PdfTagResult",
     "scan_headings",
     "find_section",
 ]

@@ -63,6 +63,22 @@ class Block:
         return self.kind in ATOMIC_KINDS
 
 
+@dataclass(frozen=True)
+class PdfRef:
+    """A tagged line in a note that points into a PDF: the tags belong to the PDF passage it names.
+
+    ``[[Week 5.pdf#page=3]] "the posterior is proportional to" #revisit`` becomes
+    ``PdfRef(target="Week 5.pdf", page_start=3, page_end=3, quote="the posterior ...", tags=("revisit",))``.
+    """
+
+    target: str  # as written in the note; resolved against the indexed PDFs later
+    page_start: int | None = None  # 1-based; None = anywhere in the PDF
+    page_end: int | None = None
+    quote: str | None = None  # words from the PDF that pick out the section(s); None = the whole page / PDF
+    quote_is_weak: bool = False  # taken from a link's display text: if it is not found, fall back to the page
+    tags: tuple[str, ...] = ()
+
+
 @dataclass
 class Section:
     """A heading-delimited region of a document."""
@@ -101,6 +117,8 @@ class ParsedContent:
     page_count: int | None = None
     # Frontmatter tags only: these apply to every chunk. ``None`` means "use ``tags``" (formats without inline tags).
     note_tags: list[str] | None = None
+    # Tagged lines that point into PDFs (Markdown only); the tags are applied to those PDF passages.
+    pdf_refs: list[PdfRef] = field(default_factory=list)
 
 
 @dataclass
@@ -129,6 +147,7 @@ class ParsedDocument:
     sections: list[Section]
     frontmatter: dict[str, Any] = field(default_factory=dict)
     note_tags: list[str] | None = None  # see ParsedContent.note_tags
+    pdf_refs: list[PdfRef] = field(default_factory=list)
 
     def section(self, section_id: str) -> Section | None:
         for s in self.sections:

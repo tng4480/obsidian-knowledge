@@ -445,7 +445,8 @@ def test_pdfs_and_other_notes_are_never_touched(writer, vault):
 
 def test_there_is_no_delete_or_overwrite_operation():
     public = {n for n in dir(VaultWriter) if not n.startswith("_")}
-    assert public == {"create_note", "append_to_note", "replace_section", "resolve"}
+    # tag_pdf_passage only ever composes create_note / append_to_note (it writes a tag line into a Markdown note).
+    assert public == {"create_note", "append_to_note", "replace_section", "tag_pdf_passage", "resolve"}
 
 
 def test_the_watcher_does_not_double_index_our_writes(writer, vault, config):

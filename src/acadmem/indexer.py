@@ -37,6 +37,7 @@ from .ingest.discovery import (
 from .ingest.markdown import is_ai_generated
 from .ingest.registry import build_registry
 from .models import Document, ParsedDocument, infer_path_metadata, stable_document_id
+from .pdf_tags import PdfTagReport, reconcile_pdf_tags
 
 log = logging.getLogger("acadmem")
 
@@ -107,6 +108,7 @@ class Indexer:
             overlap_tokens=config.overlap_tokens,
         )
         self._lock = FileLock(str(config.lock_path), timeout=lock_timeout)
+        self.last_pdf_tag_report: PdfTagReport | None = None
 
     # ------------------------------------------------------------------ setup
     def _prepare(self) -> None:
@@ -173,7 +175,11 @@ class Indexer:
             links=list(content.links),
         )
         return ParsedDocument(
-            document=document, sections=content.sections, frontmatter=content.frontmatter, note_tags=content.note_tags
+            document=document,
+            sections=content.sections,
+            frontmatter=content.frontmatter,
+            note_tags=content.note_tags,
+            pdf_refs=content.pdf_refs,
         )
 
     def index_file(self, df: DiscoveredFile, content_hash: str | None = None) -> int:
@@ -186,7 +192,7 @@ class Indexer:
             for chunk, text, vector in zip(chunks, texts, vectors):
                 chunk.embedding = vector
                 chunk.search_text = text
-        self.index.write_document(parsed.document, chunks, size=df.size)
+        self.index.write_document(parsed.document, chunks, size=df.size, pdf_refs=parsed.pdf_refs)
         return len(chunks)
 
     def _safe_index_file(self, df: DiscoveredFile, report: IndexReport, hashes: dict[str, str] | None = None) -> bool:
@@ -201,6 +207,20 @@ class Indexer:
             except Exception:  # never let error bookkeeping kill the run
                 log.exception("could not record error for %s", df.source_path)
             return False
+
+    # --------------------------------------------------------------- PDF tags
+    def apply_pdf_tags(self) -> PdfTagReport | None:
+        """Copy the tags that notes put on PDF passages onto the PDFs' chunks (see ``pdf_tags``).
+
+        Never raises: the files themselves are already indexed, and a problem here only means a tag line is not
+        applied yet. Lines that could not be applied are listed by ``acadmem pdf-tags`` and ``index_status``.
+        """
+        try:
+            self.last_pdf_tag_report = reconcile_pdf_tags(self.index)
+            return self.last_pdf_tag_report
+        except Exception:
+            log.exception("could not apply PDF tags")
+            return None
 
     # ------------------------------------------------------------------ runs
     def run(self, full: bool = False, progress: ProgressFn | None = None) -> IndexReport:
@@ -228,6 +248,7 @@ class Indexer:
                     emit("modified", df.source_path)
 
             if report.changed:
+                self.apply_pdf_tags()
                 self.index.refresh_fts()
         report.seconds = time.time() - started
         log.info(report.summary())
@@ -254,6 +275,7 @@ class Indexer:
                 if self.index.get_document(document_id=doc_id) is None:
                     return "ignored"
                 self.index.delete_document(doc_id, source_path)
+                self.apply_pdf_tags()
                 self.index.refresh_fts()
                 return "deleted"
             st = path.stat()
@@ -268,5 +290,6 @@ class Indexer:
                     pass
             ok = self._safe_index_file(df, report)
             if ok:
+                self.apply_pdf_tags()
                 self.index.refresh_fts()
             return "indexed" if ok else "error"

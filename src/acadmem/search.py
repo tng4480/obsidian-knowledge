@@ -1,4 +1,4 @@
-﻿"""Retrieval: vector / full-text / hybrid search with metadata prefiltering.
+"""Retrieval: vector / full-text / hybrid search with metadata prefiltering.
 
 Filters are compiled into a SQL predicate that LanceDB applies *before* ranking (``prefilter=True``),
 so ``top_k`` always means "the k best chunks *among those allowed*", never "k best, then thrown away".

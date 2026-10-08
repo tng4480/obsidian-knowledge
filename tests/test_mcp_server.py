@@ -23,7 +23,7 @@ READ_TOOLS = {
     "list_indexed_sources",
     "index_status",
 }
-WRITE_TOOLS = {"create_note", "append_to_note", "replace_section"}
+WRITE_TOOLS = {"create_note", "append_to_note", "replace_section", "tag_pdf_passage"}
 
 
 class Client:

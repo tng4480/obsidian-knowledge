@@ -22,6 +22,7 @@ from markdown_it import MarkdownIt
 
 from ..models import CALLOUT, CODE, LIST, MATH, PARAGRAPH, QUOTE, TABLE, Block, ParsedContent
 from .links import clean_inline, extract_inline_tags, extract_links, is_tag_only, strip_code_and_math
+from .pdf_refs import collect_pdf_refs
 from .sections import SectionBuilder
 
 _FENCE_OPEN = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
@@ -207,6 +208,7 @@ def parse_markdown(text: str, fallback_title: str = "") -> ParsedContent:
         tags=tags,
         frontmatter=meta,
         note_tags=note_tags,
+        pdf_refs=collect_pdf_refs(sections),
     )
 
 

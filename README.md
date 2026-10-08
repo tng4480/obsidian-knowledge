@@ -35,6 +35,7 @@ an `ACADMEM_<FIELD>` environment variable; see `src/acadmem/config.py`.
 | `acadmem rebuild` | drop the index and rebuild from the vault |
 | `acadmem watch` | keep the index current while you work in Obsidian |
 | `acadmem status` | counts per module and type, plus any files that failed |
+| `acadmem pdf-tags` | the tag lines in your notes that tag PDF passages, and which could not be applied (and why) |
 | `acadmem search` | query with filters (`--module --document-type --file-type --path-prefix --tag --modified-after --ai-generated`), `--mode vector\|fts\|hybrid`, `--expand`, `--json` |
 | `acadmem eval` | run the retrieval benchmark (`uv run python eval/run.py` is the same thing) |
 
@@ -46,16 +47,18 @@ Add this to `~/.codex/config.toml` (single-quoted TOML strings keep the backslas
 
 ```toml
 [mcp_servers.academic_memory]
-command = 'C:\Users\tejas\Projects\obsidian-knowledge\.venv\Scripts\acadmem-mcp.exe'
-args = []
+command = 'C:\Users\tejas\Projects\obsidian-knowledge\.venv\Scripts\python.exe'
+args = ['-m', 'acadmem.mcp_server']
 startup_timeout_sec = 120
 
 [mcp_servers.academic_memory.env]
 ACADMEM_VAULT = 'C:\Users\tejas\OneDrive\University work\Work\Part IIA\Studies'
 ```
 
-Add `args = ["--read-only"]` to expose no write tools, or `"--no-watch"` to stop the server updating the index in the
-background. By default the server catches up on changes at start and then watches the vault.
+The server is started through the virtual environment's `python.exe` rather than `acadmem-mcp.exe` because Windows
+Application Control can block the generated `.exe` launchers (the same applies to `acadmem` itself: use
+`python -m acadmem.cli ...` if `uv run acadmem` is refused). Add `'--read-only'` to `args` to expose no write tools, or
+`'--no-watch'` to stop the server updating the index in the background. By default the server catches up on changes at start and then watches the vault.
 
 ### Tools
 
@@ -70,6 +73,7 @@ background. By default the server catches up on changes at start and then watche
 | `create_note` | create a new `.md` note (always marked `ai_generated: true`) |
 | `append_to_note` | append to an existing note |
 | `replace_section` | replace the body of one heading in an existing note |
+| `tag_pdf_passage` | tag a PDF page / passage by writing a tag line into a note (the PDF is untouched; see *Tagging PDFs*) |
 
 ### Tagging passages
 
@@ -97,7 +101,50 @@ I still don't see why the tree is optimal. #revisit      <- tags this paragraph 
   `acadmem search "entropy" --tag exam`.
 * The index follows your edits: add or remove a tag in Obsidian and it is picked up within a second or two while the
   server (or `acadmem watch`) is running. Notes indexed before this feature existed keep their old note-level tags until
-  you run `acadmem rebuild`. PDFs cannot carry tags.
+  you run `acadmem rebuild`.
+
+#### Tagging PDFs
+
+A PDF has no place to hold a tag, and this system never edits your PDFs. So a PDF is tagged by a line in one of your
+**notes** that points at it. The tag lives in your vault (it survives index rebuilds and PDF re-indexing), and Codex
+retrieves the PDF section through the same `tags` filter as everything else.
+
+| write this in a note | what gets tagged |
+| --- | --- |
+| `[[Week 5.pdf]] #exam-prep` | every section of the PDF |
+| `[[Week 5.pdf#page=3]] #revisit` | the sections on page 3 (`#page=2-4` for a range) |
+| `[[Week 5.pdf#page=3]] "posterior is proportional" #revisit` | the section on page 3 containing those words (drop the page to search the whole PDF) |
+| `[[Week 5.pdf]] "Bayes' theorem" #revisit` | words may also match a section's heading |
+
+* **The smallest unit is an indexed section** (usually a paragraph or a few). Quoting one sentence tags the section around it.
+* **Quotes** are compared on words only: case, punctuation, line breaks, hyphenation, `C ₁` vs `C₁`, table pipes and
+  `<sup>` tags do not matter. A quote that runs over a section boundary tags both sections. A quote that matches more than
+  5 sections is refused as too vague rather than tagging half a handout.
+* **PDF++ users:** the plugin's "copy as quote" format works as is. Select text in the PDF, copy the link, add a tag:
+
+  ```markdown
+  > the occurrence of one does not change the probability of the other
+
+  [[Week 5.pdf#page=3&selection=4,0,5,20|Week 5, page 3]] #revisit
+  ```
+
+  The page comes from the link and the words from the quote above it. A PDF++ callout (`> [!PDF|yellow] [[...]]` with
+  the selected text as its body) works too. The `selection=` numbers are positions in the viewer's internal text list,
+  not words, so they cannot be mapped onto our extraction reliably and are ignored. If only the link's display text holds
+  the selected words, they are used, and if they are not found the page is tagged instead. (PDF++ is not installed in
+  the vault this was developed against, so these formats follow its documentation and are covered by tests with those
+  exact link shapes; they have not been exercised against the live plugin.)
+* **Ask Codex to do it:** *"tag the part of the Week 5 probability handout about independence as #revisit"*. The
+  `tag_pdf_passage` tool checks the PDF and the words against the index first, then writes the line into
+  `<module>/PDF tags.md` (created if needed) and tells Codex which sections it tagged. If nothing matches it writes
+  nothing and says why.
+* **See what happened:** `acadmem pdf-tags` lists every such line and whether it was applied (and why not): PDF not
+  found, words not found on that page, page beyond the end. `index_status` shows the same summary.
+* Measured on 150 random 12-word selections from 6 real vault PDFs (raw PDF text, as a viewer would copy it; page + quote):
+  93% of body-text selections matched, 98% of those to a single section, none to the wrong section (`eval/smoke_pdf_tags.py`).
+  What fails is text that is not in the extracted text at all: chart axis numbers, the running page header (stripped
+  as boilerplate on purpose), and some formula glyphs the extractor encodes differently. Scanned PDFs without a text layer
+  cannot be quoted (they are not indexed either).
 
 ### Reading `score`
 

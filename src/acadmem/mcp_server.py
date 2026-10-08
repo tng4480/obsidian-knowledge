@@ -9,7 +9,7 @@ Read tools
     index_status             health: counts, model, files that failed to index
 
 Write tools (Markdown notes only; guarded, see ``vault_write``)
-    create_note, append_to_note, replace_section
+    create_note, append_to_note, replace_section, tag_pdf_passage (PDFs stay untouched: the tag is written into a note)
 
 Every result carries provenance (source file, page, section) all the way from the original document.
 """
@@ -29,6 +29,7 @@ from .config import Config, load_config
 from .expand import ContextExpander, ContextPiece, ExpansionSpec
 from .index import CHUNK_COLUMNS, IndexMismatchError, VectorIndex, sql_quote
 from .indexer import Indexer
+from .pdf_tags import evaluate_pdf_tags
 from .search import SearchFilters, SearchResult, Searcher
 from .vault_write import VaultWriter, WriteError
 
@@ -42,6 +43,8 @@ Semantic memory over the user's Obsidian study vault (lecture handouts, worked s
   question names a course, paper type or year.
 * Tags: the user marks passages in Obsidian with inline #tags (a tag tags the paragraph it is written in; frontmatter
   tags cover a whole note). When they ask about something they tagged or marked, pass it as the `tags` filter.
+  PDFs cannot hold tags, so a PDF passage is tagged by a line in a note (`[[file.pdf#page=3]] "quote" #tag`); those
+  passages come back through the same `tags` filter. To tag a PDF passage for the user, use tag_pdf_passage.
 * Always cite sources as `source` + `page` (PDF) or `source` + `section` (Markdown). Use the retrieved `text` verbatim
   when quoting. If the results do not answer the question, say so rather than guessing.
 * If a hit looks truncated or only half of an answer, call get_context with its chunk_id.
@@ -384,6 +387,11 @@ class AcademicMemoryService:
             by_module[d.get("module") or "(root)"] = by_module.get(d.get("module") or "(root)", 0) + 1
             by_type[d.get("file_type") or "?"] = by_type.get(d.get("file_type") or "?", 0) + 1
         meta = self.index.read_meta() or {}
+        pdf_tags: dict[str, Any] = {}
+        try:
+            pdf_tags = evaluate_pdf_tags(self.index)[0].to_dict()
+        except Exception as exc:  # status must work even if this cannot be computed
+            log.info("pdf tag status unavailable: %s", exc)
         return {
             **base,
             "indexed": True,
@@ -396,6 +404,8 @@ class AcademicMemoryService:
             "failed_files": [
                 {"source": e["source_path"], "error": f"{e['error_type']}: {e['message']}"[:300]} for e in self.index.errors()
             ],
+            # Tag lines in notes that point into PDFs: how many applied, and which could not (and why).
+            **({"pdf_tag_lines": pdf_tags} if pdf_tags.get("tag_lines") else {}),
         }
 
     # ------------------------------------------------------------------ write tools
@@ -409,6 +419,18 @@ class AcademicMemoryService:
 
     def replace_section(self, path: str, heading: str, content: str, create_if_missing: bool = False) -> dict[str, Any]:
         return {"ok": True, **self.writer.replace_section(path, heading, content, create_if_missing).to_dict()}
+
+    def tag_pdf_passage(
+        self,
+        pdf: str,
+        tags: str | list[str],
+        page: int | None = None,
+        quote: str | None = None,
+        note_path: str | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(tags, str):
+            tags = [t for t in tags.replace(",", " ").split() if t]
+        return {"ok": True, **self.writer.tag_pdf_passage(pdf, list(tags or []), page, quote, note_path).to_dict()}
 
     # ------------------------------------------------------------------ helpers
     def _chunk_or_error(self, chunk_id: str) -> dict[str, Any]:
@@ -614,6 +636,22 @@ def build_server(service: AcademicMemoryService):
             a new "## heading" section is appended instead of failing.
             """
             return service.replace_section(path, heading, content, create_if_missing)
+
+        @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
+        @_tool_errors
+        def tag_pdf_passage(pdf: str, tags: Names, page: int | None = None, quote: str | None = None, note_path: str | None = None) -> dict[str, Any]:
+            """Tag part of a PDF so it can be found later with the `tags` filter. The PDF itself is never changed:
+            a tag line is written into a Markdown note, which is where PDF tags live.
+
+            `pdf`: the PDF's file name or vault path (e.g. "Week 5 - Probability.pdf"). `tags`: one or more tags without '#'.
+            What gets tagged is chosen by `page` and `quote` (both optional): neither = every section of the PDF; `page`
+            = the sections on that page; `quote` = the section containing those words (copy a few distinctive words
+            from the passage's `text`; they may also match its heading). Tags apply to whole indexed sections, which
+            is the smallest unit. The quote is checked against the PDF first: if it matches nothing, or too many sections,
+            nothing is written and the error says why. The line goes into `note_path` (default "<module>/PDF tags.md",
+            created if missing) and is re-indexed immediately; the result lists the sections tagged.
+            """
+            return service.tag_pdf_passage(pdf, tags, page, quote, note_path)
 
     return server
 
