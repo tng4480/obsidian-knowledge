@@ -34,7 +34,7 @@ import frontmatter
 from .config import Config
 from .ingest.discovery import FileUnavailableError, read_bytes, to_source_path
 from .ingest.markdown import parse_markdown
-from .pdf_tags import pages_text, find_passages, load_chunks, normalize_words, resolve_pdf
+from .pdf_tags import find_passages, load_chunks, normalize_words, pages_text, passage_text, resolve_pdf
 
 if TYPE_CHECKING:  # pragma: no cover
     from .indexer import Indexer
@@ -555,7 +555,8 @@ class VaultWriter:
             if not normalize_words(clean_quote):
                 raise ContentRejected("quote has no words in it")
 
-        match = find_passages(load_chunks(index, doc), page, page, clean_quote)
+        chunk_rows = {r["chunk_id"]: r for r in load_chunks(index, doc)}
+        match = find_passages(list(chunk_rows.values()), page, page, clean_quote)
         if not match.ok:
             raise PdfPassageNotFound(f"Nothing was tagged: {match.reason}.")
 
@@ -567,7 +568,17 @@ class VaultWriter:
 
         note = note_path or (f"{doc['module']}/PDF tags.md" if doc.get("module") else "PDF tags.md")
         absolute, note_source = self.resolve(note, for_create=True)
-        sections = [{"section": p.heading, "page": p.page_start, "pages": pages_text(p.page_start, p.page_end), "chunk_id": p.chunk_id} for p in match.passages]
+        sections = [
+            {
+                "section": p.heading,
+                "page": p.page_start,
+                "pages": pages_text(p.page_start, p.page_end),
+                "chunk_id": p.chunk_id,
+                # the exact paragraph(s) tagged when that is narrower than the section
+                **({"tagged_text": passage_text(chunk_rows[p.chunk_id]["text"], p.paragraphs)} if p.paragraphs is not None else {}),
+            }
+            for p in match.passages
+        ]
         if absolute.exists():
             text, _ = self._read_existing(absolute, note_source)
             if line in text:

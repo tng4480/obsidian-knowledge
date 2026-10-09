@@ -10,6 +10,7 @@ Tables
 ``documents``  one row per indexed file (also the incremental-indexing manifest)
 ``errors``     last failure per file (cleared when the file next indexes cleanly)
 ``pdf_tags``   tagged lines in notes that point into PDFs (their tags are applied to those PDFs' chunks afterwards)
+``tag_spans``  where a tag covers only part of a chunk (which paragraphs); no row = the tag covers the whole chunk
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ CHUNKS = "chunks"
 DOCUMENTS = "documents"
 ERRORS = "errors"
 PDF_TAGS = "pdf_tags"
+TAG_SPANS = "tag_spans"
 
 
 class IndexMismatchError(RuntimeError):
@@ -119,6 +121,16 @@ PDF_TAGS_SCHEMA = pa.schema(
 )
 
 
+TAG_SPANS_SCHEMA = pa.schema(
+    [
+        pa.field("document_id", pa.string(), nullable=False),
+        pa.field("chunk_id", pa.string(), nullable=False),
+        pa.field("tag", pa.string(), nullable=False),
+        pa.field("paragraphs", pa.list_(pa.int32())),  # 0-based indices into the chunk's paragraphs
+    ]
+)
+
+
 def chunk_to_row(chunk: Chunk) -> dict[str, Any]:
     if chunk.embedding is None:
         raise ValueError(f"chunk {chunk.chunk_id} has no embedding")
@@ -164,6 +176,7 @@ class VectorIndex:
         self._documents = None
         self._errors = None
         self._pdf_tags = None
+        self._tag_spans = None
 
     # ---------------------------------------------------------------- lifecycle
     @property
@@ -211,6 +224,8 @@ class VectorIndex:
             self.db.create_table(ERRORS, schema=ERRORS_SCHEMA)
         if PDF_TAGS not in names:  # added after schema v2: an additive table, so older indexes just gain it
             self.db.create_table(PDF_TAGS, schema=PDF_TAGS_SCHEMA)
+        if TAG_SPANS not in names:
+            self.db.create_table(TAG_SPANS, schema=TAG_SPANS_SCHEMA)
         if meta is None:
             self.config.index_dir.mkdir(parents=True, exist_ok=True)
             self.meta_path.write_text(
@@ -230,10 +245,11 @@ class VectorIndex:
         self._documents = self.db.open_table(DOCUMENTS)
         self._errors = self.db.open_table(ERRORS)
         self._pdf_tags = self.db.open_table(PDF_TAGS)
+        self._tag_spans = self.db.open_table(TAG_SPANS)
 
     def reset(self) -> None:
         """Delete the entire derived index (full rebuild starts from here)."""
-        self._chunks = self._documents = self._errors = self._pdf_tags = None
+        self._chunks = self._documents = self._errors = self._pdf_tags = self._tag_spans = None
         self._db = None
         if self.config.db_path.exists():
             shutil.rmtree(self.config.db_path, ignore_errors=True)
@@ -270,6 +286,14 @@ class VectorIndex:
             self._pdf_tags = self.db.open_table(PDF_TAGS)
         return self._pdf_tags
 
+    @property
+    def tag_spans_table(self):
+        if self._tag_spans is None:
+            if TAG_SPANS not in self._table_names():  # an index created before span-level tags existed
+                self.db.create_table(TAG_SPANS, schema=TAG_SPANS_SCHEMA)
+            self._tag_spans = self.db.open_table(TAG_SPANS)
+        return self._tag_spans
+
     # ------------------------------------------------------------------ writes
     def write_document(self, doc: Document, chunks: list[Chunk], size: int = 0, pdf_refs: list[PdfRef] | None = None) -> None:
         """Atomically-ish replace everything stored for ``doc`` (delete old rows, add new)."""
@@ -281,7 +305,24 @@ class VectorIndex:
         doc.indexed_at = time.time()
         self.documents.add([document_to_row(doc, size)])
         self.set_pdf_refs(doc.id, doc.source_path, pdf_refs or [])
+        self.tag_spans_table.delete(f"document_id = {sql_quote(doc.id)}")  # chunk ids are reused: spans are recomputed
         self.clear_error(doc.source_path)
+
+    def tag_span_rows(self, document_id: str | None = None, chunk_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        """Stored narrow tag spans, for one document or for specific chunks."""
+        if document_id is not None:
+            where = f"document_id = {sql_quote(document_id)}"
+        elif chunk_ids:
+            where = "chunk_id IN (" + ", ".join(sql_quote(c) for c in chunk_ids) + ")"
+        else:
+            return []
+        return self.tag_spans_table.search().where(where, prefilter=True).limit(1_000_000).to_list()
+
+    def replace_tag_spans(self, document_id: str, rows: list[dict[str, Any]]) -> None:
+        table = self.tag_spans_table
+        table.delete(f"document_id = {sql_quote(document_id)}")
+        if rows:
+            table.add([{"document_id": document_id, **r} for r in rows])
 
     def set_pdf_refs(self, document_id: str, source_path: str, refs: list[PdfRef]) -> None:
         """Replace the tagged PDF lines recorded for one note."""
@@ -342,6 +383,7 @@ class VectorIndex:
         self.chunks.delete(f"document_id = {sql_quote(document_id)}")
         self.documents.delete(f"id = {sql_quote(document_id)}")
         self.pdf_tags_table.delete(f"document_id = {sql_quote(document_id)}")
+        self.tag_spans_table.delete(f"document_id = {sql_quote(document_id)}")
         if source_path:
             self.clear_error(source_path)
 

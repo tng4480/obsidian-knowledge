@@ -29,7 +29,7 @@ from .config import Config, load_config
 from .expand import ContextExpander, ContextPiece, ExpansionSpec
 from .index import CHUNK_COLUMNS, IndexMismatchError, VectorIndex, sql_quote
 from .indexer import Indexer
-from .pdf_tags import evaluate_pdf_tags
+from .pdf_tags import evaluate_pdf_tags, tagged_excerpt
 from .search import SearchFilters, SearchResult, Searcher
 from .vault_write import VaultWriter, WriteError
 
@@ -45,6 +45,7 @@ Semantic memory over the user's Obsidian study vault (lecture handouts, worked s
   tags cover a whole note). When they ask about something they tagged or marked, pass it as the `tags` filter.
   PDFs cannot hold tags, so a PDF passage is tagged by a line in a note (`[[file.pdf#page=3]] "quote" #tag`); those
   passages come back through the same `tags` filter. To tag a PDF passage for the user, use tag_pdf_passage.
+  A tagged PDF result has the whole section in `text`; if only part of it was tagged, `tagged_text` is that part.
 * Always cite sources as `source` + `page` (PDF) or `source` + `section` (Markdown). Use the retrieved `text` verbatim
   when quoting. If the results do not answer the question, say so rather than guessing.
 * If a hit looks truncated or only half of an answer, call get_context with its chunk_id.
@@ -210,6 +211,7 @@ class AcademicMemoryService:
         except IndexMismatchError as exc:
             raise ValueError(str(exc)) from exc
         results = [format_hit(h) for h in hits]
+        self._mark_tagged(results, filters.get("tags"))
         if expand:
             for hit, item in zip(hits, results):
                 item["context"] = [format_piece(p) for p in self.expander.expand(hit, expand).pieces]
@@ -242,6 +244,7 @@ class AcademicMemoryService:
             if expand:
                 item["context"] = [format_piece(p) for p in self.expander.expand(row, expand).pieces]
             results.append(item)
+        self._mark_tagged(results, filters.get("tags"))
         out: dict[str, Any] = {
             "query": "",
             "mode": "browse",
@@ -256,9 +259,36 @@ class AcademicMemoryService:
             out["hint"] = "Nothing carries that tag. Tags are case-insensitive and written without spaces (e.g. #revisit); check list_indexed_sources(tags=...)."
         return out
 
+    def _mark_tagged(self, items: list[dict[str, Any]], wanted_tags: str | list[str] | None) -> None:
+        """Add ``tagged_text`` to results whose tag covers only part of the section (e.g. one quoted paragraph of a PDF).
+
+        ``text`` stays the whole section so the tagged passage can be read in context. Nothing is added when the whole
+        section is tagged, which is the case for notes, page tags and whole-PDF tags.
+        """
+        candidates = [i for i in items if i.get("tags") and i.get("file_type") == "pdf"]
+        if not candidates:
+            return
+        try:
+            rows = self.index.tag_span_rows(chunk_ids=[i["chunk_id"] for i in candidates])
+        except Exception as exc:  # a missing detail must never break a search
+            log.info("tag spans unavailable: %s", exc)
+            return
+        spans: dict[str, dict[str, tuple[int, ...]]] = {}
+        for r in rows:
+            spans.setdefault(r["chunk_id"], {})[r["tag"]] = tuple(r["paragraphs"] or ())
+        if not spans:
+            return
+        wanted = [t.lstrip("#").lower() for t in ([wanted_tags] if isinstance(wanted_tags, str) else list(wanted_tags or []))]
+        for item in candidates:
+            excerpt = tagged_excerpt(item["text"], item["tags"], spans.get(item["chunk_id"], {}), wanted)
+            if excerpt:
+                item["tagged_text"] = excerpt
+
     def get_source_chunk(self, chunk_id: str) -> dict[str, Any]:
         row = self._chunk_or_error(chunk_id)
-        return {"chunk": format_row(row)}
+        chunk = format_row(row)
+        self._mark_tagged([chunk], None)
+        return {"chunk": chunk}
 
     def get_context(
         self,
@@ -553,6 +583,9 @@ def build_server(service: AcademicMemoryService):
         note's frontmatter tags every passage of the note. For "show me everything I tagged #revisit" leave `query`
         empty: the tagged passages are then listed in vault order (default 20, up to 100 with `top_k`) instead of
         being ranked. With a `query` as well, the tagged passages are ranked by relevance to it.
+        `text` is always the whole section. When the user tagged only part of a PDF section (a quoted passage),
+        the result also has `tagged_text`: exactly the paragraph(s) they tagged, inside `text`. Treat that as what
+        they marked and the rest of `text` as its surrounding context. No `tagged_text` means the whole section is tagged.
         `expand` adds surrounding context to every hit, e.g. "neighbors:1", "section", "parent", "pages:1" ("+" joins them).
         """
         return service.search(

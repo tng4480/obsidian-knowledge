@@ -117,7 +117,7 @@ retrieves the PDF section through the same `tags` filter as everything else.
 | `[[Week 5.pdf]] "Bayes' theorem" #revisit` | words may also match a section's heading |
 
 * **The smallest unit is an indexed section** (usually a paragraph or a few). Quoting one sentence tags the section around it.
-* **Quotes** are compared on words only: case, punctuation, line breaks, hyphenation, `C ₁` vs `C₁`, table pipes and
+* **Quotes** are compared on words only: case, punctuation, line breaks, hyphenation, `C â‚` vs `Câ‚`, table pipes and
   `<sup>` tags do not matter. A quote that runs over a section boundary tags both sections. A quote that matches more than
   5 sections is refused as too vague rather than tagging half a handout.
 * **PDF++ users:** the plugin's "copy as quote" format works as is. Select text in the PDF, copy the link, add a tag:
@@ -138,6 +138,11 @@ retrieves the PDF section through the same `tags` filter as everything else.
   `tag_pdf_passage` tool checks the PDF and the words against the index first, then writes the line into
   `<module>/PDF tags.md` (created if needed) and tells Codex which sections it tagged. If nothing matches it writes
   nothing and says why.
+* **Which part of the section:** a quote tags the paragraph(s) it actually hit, not the whole section. Search results
+  still return the whole section as `text` (so the passage is read in context) and add `tagged_text` holding exactly
+  the tagged paragraph(s). No `tagged_text` means the whole section is tagged (page tags, whole-PDF tags, notes, or a
+  quote that only matches a heading). Chunking, embeddings and ranking are unchanged; spans live in a small
+  `tag_spans` table and are recomputed with the tags.
 * **See what happened:** `acadmem pdf-tags` lists every such line and whether it was applied (and why not): PDF not
   found, words not found on that page, page beyond the end. `index_status` shows the same summary.
 * Measured on 150 random 12-word selections from 6 real vault PDFs (raw PDF text, as a viewer would copy it; page + quote):

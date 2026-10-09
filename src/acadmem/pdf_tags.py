@@ -87,6 +87,22 @@ def resolve_pdf(target: str, docs: list[dict[str, Any]]) -> tuple[dict[str, Any]
 
 
 # --------------------------------------------------------------------------- matching
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+
+
+def split_paragraphs(text: str) -> list[str]:
+    """A chunk's paragraphs (its blocks are joined with blank lines). Used both to record and to show a tagged span."""
+    return [p for p in _PARAGRAPH_BREAK.split(text or "") if p.strip()]
+
+
+def passage_text(text: str, paragraphs: tuple[int, ...] | None) -> str:
+    """The text of the given paragraphs (``None`` = the whole chunk), in reading order."""
+    if paragraphs is None:
+        return text
+    parts = split_paragraphs(text)
+    return "\n\n".join(parts[i] for i in sorted(paragraphs) if i < len(parts))
+
+
 @dataclass
 class Passage:
     chunk_id: str
@@ -94,6 +110,9 @@ class Passage:
     heading: str
     page_start: int | None
     page_end: int | None
+    # Which paragraphs of the chunk the quote hit; ``None`` = the whole chunk (a page / whole-PDF tag, a quote that
+    # matched the heading or ran over a section boundary, or a chunk with a single paragraph).
+    paragraphs: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -106,14 +125,56 @@ class Match:
         return bool(self.passages) and self.reason is None
 
 
-def _to_passage(row: dict[str, Any]) -> Passage:
+def _to_passage(row: dict[str, Any], paragraphs: tuple[int, ...] | None = None) -> Passage:
     return Passage(
         row["chunk_id"],
         int(row.get("chunk_index") or 0),
         " > ".join(row.get("heading_path") or []),
         row.get("page_start"),
         row.get("page_end"),
+        paragraphs,
     )
+
+
+def _greedy_cover(wanted: set, units: list[set]) -> list[int] | None:
+    """Indices of the fewest-looking units that together contain most of ``wanted`` (None if too little is found)."""
+    scored = sorted(((len(wanted & u), i) for i, u in enumerate(units) if wanted & u), key=lambda s: (-s[0], s[1]))
+    remaining, chosen = set(wanted), []
+    for _, i in scored:
+        gain = remaining & units[i]
+        if len(gain) >= max(1, 0.2 * len(wanted)):
+            chosen.append(i)
+            remaining -= gain
+        if len(remaining) <= (1 - MIN_COVERAGE) * len(wanted):
+            break
+    if not chosen or len(remaining) > (1 - MIN_COVERAGE) * len(wanted) + 1e-9:
+        return None
+    return sorted(chosen)
+
+
+def _narrow(text: str, words: list[str], squashed: str, fuzzy: bool) -> tuple[int, ...] | None:
+    """The paragraph(s) of a matched chunk that hold the quote, or ``None`` when it is not narrower than the chunk."""
+    paragraphs = split_paragraphs(text)
+    n = len(paragraphs)
+    if n < 2:
+        return None
+    para_words = [normalize_words(p) for p in paragraphs]
+    if fuzzy:
+        size = 3 if len(words) >= 3 else len(words)
+        found = _greedy_cover(_shingles(words, size), [_shingles(w, size) for w in para_words])
+        return tuple(found) if found and len(found) < n else None
+    needle = " " + " ".join(words) + " "
+    use_squash = len(squashed) >= MIN_SQUASHED_CHARS
+    for length in range(1, n):  # the shortest run of consecutive paragraphs that contains the whole quote
+        runs = [
+            i
+            for i in range(n - length + 1)
+            if needle in " " + " ".join(w for p in para_words[i : i + length] for w in p) + " "
+            or (use_squash and squashed in squash(" ".join(paragraphs[i : i + length])))
+        ]
+        if runs:
+            return tuple(sorted({j for i in runs for j in range(i, i + length)}))
+    return None  # only the whole chunk (or its heading) holds all the words
 
 
 def _on_pages(row: dict[str, Any], start: int | None, end: int | None) -> bool:
@@ -147,6 +208,7 @@ def find_passages(rows: list[dict[str, Any]], page_start: int | None, page_end: 
     exact = [r for r in candidates if needle in " " + " ".join(texts[r["chunk_id"]]) + " "]
     squashed_quote = squash(quote)
     use_squash = len(squashed_quote) >= MIN_SQUASHED_CHARS
+    spans_from = "verbatim"  # how the sections were found: decides whether a paragraph span can be reported
     if not exact and use_squash:
         # Same words once spacing is ignored: formulas, tables and subscripts are spaced differently by the PDF
         # viewer and by our extractor.
@@ -162,6 +224,7 @@ def find_passages(rows: list[dict[str, Any]], page_start: int | None, page_end: 
                 use_squash and squashed_quote in squash((a.get("text") or "") + " " + (b.get("text") or ""))
             ):
                 exact.extend(r for r in (a, b) if r not in exact)
+                spans_from = "boundary"  # runs over two sections: each is tagged as a whole
     if not exact:
         # Not verbatim (extraction differences, a quote that runs over a section boundary): fall back to how much
         # of the quote's word groups each section contains, and accept a small set that together covers most of it.
@@ -181,9 +244,14 @@ def find_passages(rows: list[dict[str, Any]], page_start: int | None, page_end: 
         if not chosen or len(remaining) > (1 - MIN_COVERAGE) * len(wanted) + 1e-9:
             return Match(reason=f"the quoted words were not found in the PDF's indexed text{where}")
         exact = chosen
+        spans_from = "fuzzy"
     if len(exact) > MAX_QUOTE_MATCHES:
         return Match(reason=f"the quote matches {len(exact)} sections{where}; quote a longer or more distinctive passage")
-    return Match([_to_passage(r) for r in sorted(exact, key=lambda r: r.get("chunk_index") or 0)])
+    passages = []
+    for r in sorted(exact, key=lambda r: r.get("chunk_index") or 0):
+        span = None if spans_from == "boundary" else _narrow(r.get("text") or "", words, squashed_quote, spans_from == "fuzzy")
+        passages.append(_to_passage(r, span))
+    return Match(passages)
 
 
 def load_chunks(index: VectorIndex, doc: dict[str, Any]) -> list[dict[str, Any]]:
@@ -225,6 +293,9 @@ class PdfTagEntry:
 class PdfTagReport:
     entries: list[PdfTagEntry] = field(default_factory=list)
     chunks_changed: int = 0
+    # chunk_id -> {tag: paragraphs}: tags that cover only part of a chunk. A tag that covers a whole chunk is absent.
+    spans: dict[str, dict[str, tuple[int, ...]]] = field(default_factory=dict)
+    spans_changed: int = 0
 
     @property
     def problems(self) -> list[PdfTagEntry]:
@@ -266,6 +337,7 @@ def evaluate_pdf_tags(index: VectorIndex) -> tuple[PdfTagReport, dict[str, list[
         if doc.get("tags"):
             chunks_of(doc)
     desired_sets: dict[str, dict[str, None]] = {}
+    spans: dict[str, dict[str, set[int] | None]] = {}  # None = the tag covers the whole chunk
 
     for ref in refs:
         entry = PdfTagEntry(
@@ -298,8 +370,18 @@ def evaluate_pdf_tags(index: VectorIndex) -> tuple[PdfTagReport, dict[str, list[
         entry.sections = len(match.passages)
         for passage in match.passages:
             bucket = desired_sets.setdefault(passage.chunk_id, {})
+            covered = spans.setdefault(passage.chunk_id, {})
             for tag in entry.tags:
                 bucket.setdefault(tag, None)
+                if passage.paragraphs is None:
+                    covered[tag] = None
+                elif not (tag in covered and covered[tag] is None):
+                    covered.setdefault(tag, set()).update(passage.paragraphs)  # type: ignore[union-attr]
+    report.spans = {
+        cid: narrow
+        for cid, tags in spans.items()
+        if (narrow := {t: tuple(sorted(p)) for t, p in tags.items() if p is not None})
+    }
 
     desired: dict[str, list[str]] = {}
     current: dict[str, dict[str, Any]] = {}
@@ -325,7 +407,32 @@ def reconcile_pdf_tags(index: VectorIndex) -> PdfTagReport:
         touched = {current[cid]["document_id"] for cid in changed}
         index.replace_document_tags({doc_id: sorted(by_doc.get(doc_id, {})) for doc_id in touched})
     report.chunks_changed = len(changed)
+
+    # Which part of a chunk a tag covers (only where it is narrower than the chunk), rewritten per document when it differs.
+    wanted_by_doc: dict[str, set[tuple[str, str, tuple[int, ...]]]] = {row["document_id"]: set() for row in current.values()}
+    for cid, tags in report.spans.items():
+        for tag, paragraphs in tags.items():
+            wanted_by_doc[current[cid]["document_id"]].add((cid, tag, paragraphs))
+    for doc_id, wanted in wanted_by_doc.items():
+        stored = {(r["chunk_id"], r["tag"], tuple(r["paragraphs"] or ())) for r in index.tag_span_rows(document_id=doc_id)}
+        if wanted != stored:
+            index.replace_tag_spans(doc_id, [{"chunk_id": c, "tag": t, "paragraphs": list(p)} for c, t, p in sorted(wanted)])
+            report.spans_changed += 1
     return report
+
+
+def tagged_excerpt(text: str, tags: list[str], spans: dict[str, tuple[int, ...]], wanted: list[str] | None = None) -> str | None:
+    """The part of ``text`` that was tagged, when that is narrower than the whole chunk (otherwise ``None``).
+
+    ``tags`` are the chunk's tags, ``spans`` its narrow tag spans and ``wanted`` the tags the caller asked for (all
+    tags when empty). If any relevant tag covers the whole chunk, the whole chunk is the tagged passage.
+    """
+    relevant = [t for t in tags if not wanted or t in wanted]
+    if not relevant or any(t not in spans for t in relevant):
+        return None
+    paragraphs = tuple(sorted({i for t in relevant for i in spans[t]}))
+    excerpt = passage_text(text, paragraphs)
+    return excerpt if excerpt and excerpt.strip() != (text or "").strip() else None
 
 
 __all__ = [
@@ -338,7 +445,10 @@ __all__ = [
     "find_passages",
     "load_chunks",
     "normalize_words",
+    "passage_text",
     "reconcile_pdf_tags",
     "resolve_pdf",
+    "split_paragraphs",
     "squash",
+    "tagged_excerpt",
 ]
