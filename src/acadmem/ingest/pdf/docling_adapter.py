@@ -18,9 +18,12 @@ from .pymupdf_adapter import read_outline
 class DoclingExtractor(PDFExtractor):
     name = "docling"
 
-    def __init__(self, do_ocr: bool = False, do_table_structure: bool = True) -> None:
+    def __init__(self, do_ocr: bool = False, do_table_structure: bool = True, do_formulas: bool = False) -> None:
         self.do_ocr = do_ocr
         self.do_table_structure = do_table_structure
+        # Formula recognition turns each equation into LaTeX (slow: a few seconds per formula on CPU). Without it
+        # equations in a scan are skipped entirely.
+        self.do_formulas = do_formulas
         self._converter = None
 
     def _get_converter(self):
@@ -29,7 +32,9 @@ class DoclingExtractor(PDFExtractor):
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
-            options = PdfPipelineOptions(do_ocr=self.do_ocr, do_table_structure=self.do_table_structure)
+            options = PdfPipelineOptions(
+                do_ocr=self.do_ocr, do_table_structure=self.do_table_structure, do_formula_enrichment=self.do_formulas
+            )
             self._converter = DocumentConverter(
                 format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
             )

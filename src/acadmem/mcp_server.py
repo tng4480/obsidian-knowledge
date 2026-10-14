@@ -49,9 +49,18 @@ Semantic memory over the user's Obsidian study vault (lecture handouts, worked s
 * Always cite sources as `source` + `page` (PDF) or `source` + `section` (Markdown). Use the retrieved `text` verbatim
   when quoting. If the results do not answer the question, say so rather than guessing.
 * If a hit looks truncated or only half of an answer, call get_context with its chunk_id.
+* Formulae, data and methods: the CUED Engineering Databook is the module `Databook`. For calculations or property
+  look-ups search it first (module="Databook"). If it has the method or data, use that version and say where it came
+  from: "CUED Databook, PDF p. N", the section heading, and quote the line. If it has nothing relevant, say so. Some
+  databook pages are images and cannot be searched.
 * Writing: create_note / append_to_note / replace_section only ever write Markdown notes inside the vault. Notes you
   create are tagged `ai_generated: true`. Never invent paths outside the vault's module folders (e.g. `3F7/Notes/...`).
   Writes are re-indexed immediately, so the new content is searchable straight away.
+* Maths inside the content you write into a note (and only there, never in your chat replies) uses Obsidian's
+  delimiters: `$...$` inline and `$$...$$` on their own lines for display equations.
+  Never `\\(...\\)` or `\\[...\\]` in a note: Obsidian does not render them reliably. Write each LaTeX backslash once
+  (`\\frac`, `\\partial`), never doubled. Keep tables simple (no maths or line breaks inside cells). Link to the source
+  as `[[file.pdf#page=N]]`.
 """
 
 

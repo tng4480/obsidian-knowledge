@@ -51,6 +51,9 @@ class Config:
 
     # --- PDF --------------------------------------------------------------
     pdf_extractor: str = "pymupdf"  # "pymupdf" | "docling"
+    # Vault folders (top level or nested, relative to the vault) whose PDFs get OCR + formula recognition on any scanned
+    # pages. Slow (about 5 s a page, more with formulas), so it is opt-in per folder. Empty tuple turns it off.
+    ocr_paths: tuple[str, ...] = ("Databook",)
 
     # --- chunking (tokens measured with the embedding model's tokenizer) --
     max_chunk_tokens: int = 384  # model max is 512; leave room for the heading breadcrumb
@@ -92,7 +95,7 @@ class Config:
 
 
 _PATH_FIELDS = {"vault_path", "index_dir"}
-_TUPLE_FIELDS = {"extensions", "ignored_dirs", "ignored_root_entries"}
+_TUPLE_FIELDS = {"extensions", "ignored_dirs", "ignored_root_entries", "ocr_paths"}
 _INT_FIELDS = {
     "embedding_batch_size",
     "max_chunk_tokens",

@@ -1,0 +1,12 @@
+# Added to ~/.codex/config.toml by codex/install.ps1, which fills in the two paths below.
+# Single-quoted TOML strings keep the backslashes literal. The server is started through the virtual environment's
+# python.exe because Windows Application Control can block the generated acadmem-mcp.exe launcher.
+# Add '--read-only' to args to expose no write tools, or '--no-watch' to stop background index updates.
+
+[mcp_servers.academic_memory]
+command = '@@PYTHON@@'
+args = ['-m', 'acadmem.mcp_server']
+startup_timeout_sec = 120
+
+[mcp_servers.academic_memory.env]
+ACADMEM_VAULT = '@@VAULT@@'

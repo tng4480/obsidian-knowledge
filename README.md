@@ -43,7 +43,18 @@ A file that cannot be parsed never aborts indexing: it is recorded (see `status`
 
 ## Using it from Codex (MCP)
 
-Add this to `~/.codex/config.toml` (single-quoted TOML strings keep the backslashes literal):
+Everything Codex needs is in the repo's `codex/` folder, so a fresh clone can be set up in one step:
+
+```powershell
+uv sync
+powershell -ExecutionPolicy Bypass -File codex\install.ps1 -Vault 'C:\path\to\your\vault'
+```
+
+It adds the server entry to `~/.codex/config.toml` (an existing entry is never overwritten) and puts the guidance from
+`codex/AGENTS.md` into `~/.codex/AGENTS.md` between marker comments, so it can be re-run to update it and anything
+else in that file is left alone. Edit the guidance in `codex/AGENTS.md`, not in your home folder. Restart Codex
+afterwards. The entry it adds looks like this (`codex/config.example.toml`; single-quoted TOML strings keep the
+backslashes literal):
 
 ```toml
 [mcp_servers.academic_memory]
@@ -211,20 +222,21 @@ go to `.trash/`, which is ignored).
   inside a module is still study material).
 * Its write tools (`delete_note`, replace-mode `update_note`, `create_note(overwrite=true)`) are **not** covered by the
   guarantees above: no backup, no refusal to overwrite, no AI flag. Restricting them is a choice for the Codex config.
-* Neither server tells the model about the other. Add something like this to `~/.codex/AGENTS.md`:
-
-  ```
-  For questions about my university study material (lectures, handouts, worked solutions, Tripos papers, my notes),
-  use the academic_memory server: search_academic_memory first, then get_context / get_document for more. It is the
-  only tool that can read the PDFs. Use the obsidian server only for vault housekeeping: links and backlinks, tags,
-  daily notes, tasks and decisions, git sync. Never use obsidian's search_vault for study questions.
-  ```
+* Neither server tells the model about the other. `codex/AGENTS.md` does (which one to use for study questions and
+  which for housekeeping, plus the tagging, maths-formatting and databook rules); `codex/install.ps1` installs it.
 
 ## Design decisions
 
 * **PDF extraction**: `pymupdf4llm` by default (fast, keeps page numbers and heading structure); Docling is available
   behind the same `PDFExtractor` interface. Chosen from a bake-off on real vault PDFs (`eval/pdf_bakeoff.py`).
-  Scanned PDFs without a text layer are not OCR'd.
+  Scanned pages (no text layer) are **not OCR'd by default**, with one opt-in exception: PDFs under the folders in
+  `ocr_paths` (default `Databook`) that contain scanned pages go through Docling with OCR and formula recognition
+  instead. That gives section headings, prose, lists and equations as LaTeX, but it is slow (roughly 5 s a page plus a
+  few seconds per formula, so a 26-page scan takes several minutes, once per file change), diagrams and text inside
+  figures are still lost, and printed scans read far better than handwriting. A PDF in those folders that already has
+  text on every page keeps the fast path. Set `ocr_paths` to a comma-separated list of vault folders, or empty to turn
+  it off. A file already indexed is only re-processed when its content changes, so after changing `ocr_paths` clear
+  that document from the index (or `acadmem rebuild`).
 * **Embeddings**: `BAAI/bge-small-en-v1.5` on CPU, with the bge query instruction on queries only.
 * **Chunking**: follows the document's heading tree; small sections are merged and large ones split on token counts,
   with provenance (file, pages, heading breadcrumb) kept on every chunk.
