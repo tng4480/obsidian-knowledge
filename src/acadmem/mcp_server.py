@@ -25,6 +25,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
+# Set this before importing LanceDB/NumPy: OpenBLAS otherwise starts a CPU-sized
+# thread pool (~480 MB extra private commit on a 16-thread Windows machine).
+# Each stdio session is a separate process. Keep an explicit user override.
+import os
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 from .config import Config, load_config
 from .expand import ContextExpander, ContextPiece, ExpansionSpec
 from .index import CHUNK_COLUMNS, IndexMismatchError, VectorIndex, sql_quote

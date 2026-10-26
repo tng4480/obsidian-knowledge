@@ -10,3 +10,5 @@ startup_timeout_sec = 120
 
 [mcp_servers.academic_memory.env]
 ACADMEM_VAULT = '@@VAULT@@'
+# Avoid a separate large OpenBLAS thread pool in every MCP process.
+OPENBLAS_NUM_THREADS = '1'

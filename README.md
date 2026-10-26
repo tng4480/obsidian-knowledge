@@ -64,12 +64,18 @@ startup_timeout_sec = 120
 
 [mcp_servers.academic_memory.env]
 ACADMEM_VAULT = 'C:\Users\tejas\OneDrive\University work\Work\Part IIA\Studies'
+OPENBLAS_NUM_THREADS = '1'
 ```
 
 The server is started through the virtual environment's `python.exe` rather than `acadmem-mcp.exe` because Windows
 Application Control can block the generated `.exe` launchers (the same applies to `acadmem` itself: use
 `python -m acadmem.cli ...` if `uv run acadmem` is refused). Add `'--read-only'` to `args` to expose no write tools, or
 `'--no-watch'` to stop the server updating the index in the background. By default the server catches up on changes at start and then watches the vault.
+
+The MCP entry point defaults `OPENBLAS_NUM_THREADS` to `1` before loading NumPy. This avoids duplicating a large
+numerical worker pool in every stdio server. An explicit environment value is respected. The setting affects
+new processes; restart Codex to replace servers that are already running. It does not share embedding models
+between sessions.
 
 ### Tools
 
