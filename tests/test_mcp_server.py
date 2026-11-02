@@ -274,6 +274,71 @@ def test_warm_up_never_raises_without_an_index(config, fake_embedder):
     service.warm_up().join(timeout=30)  # must swallow the error: the real call will explain it
 
 
+# ------------------------------------------------------------------ several servers, one vault
+def _fast(config):
+    return dataclasses.replace(config, watch_start_delay_seconds=0.0, watch_retry_seconds=0.1, watch_debounce_seconds=0.2)
+
+
+def _wait(predicate, timeout=15.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_only_one_of_several_servers_watches_the_vault(indexer, config, fake_embedder):
+    indexer.run(full=True)
+    config = _fast(config)
+    first = AcademicMemoryService(config, embedder=fake_embedder)
+    second = AcademicMemoryService(config, embedder=fake_embedder)
+    try:
+        first.start_watcher()
+        assert _wait(lambda: first.watching)
+        second.start_watcher()
+        assert not _wait(lambda: second.watching, timeout=1.0)  # the follower keeps waiting
+    finally:
+        second.stop_watcher()
+        first.stop_watcher()
+
+
+def test_a_waiting_server_takes_over_when_the_watcher_exits(indexer, config, fake_embedder):
+    indexer.run(full=True)
+    config = _fast(config)
+    first = AcademicMemoryService(config, embedder=fake_embedder)
+    second = AcademicMemoryService(config, embedder=fake_embedder)
+    try:
+        first.start_watcher()
+        assert _wait(lambda: first.watching)
+        second.start_watcher()
+        first.stop_watcher()  # the owning chat closed
+        assert _wait(lambda: second.watching)
+    finally:
+        second.stop_watcher()
+        first.stop_watcher()
+
+
+def test_a_server_stopped_before_the_start_delay_never_watches(indexer, config, fake_embedder):
+    indexer.run(full=True)
+    config = dataclasses.replace(config, watch_start_delay_seconds=30.0)  # a probe that lives for a second
+    probe = AcademicMemoryService(config, embedder=fake_embedder)
+    thread = probe.start_watcher()
+    probe.stop_watcher()
+    thread.join(timeout=5)
+    assert not thread.is_alive() and probe.watching is False
+
+
+def test_the_embedding_model_is_not_loaded_until_the_first_search(config, fake_embedder, monkeypatch):
+    calls = []
+    original = fake_embedder.embed_query
+    monkeypatch.setattr(fake_embedder, "embed_query", lambda text: calls.append(text) or original(text))
+    AcademicMemoryService(config, embedder=fake_embedder)  # what main() does without --warm-up
+    assert calls == []
+
+
 # ------------------------------------------------------------------ writes
 def test_create_note_is_marked_ai_generated_indexed_and_searchable(client, vault):
     res = client.call("create_note", path="3F1/Notes/AI summary.md", content="# Summary\n\nErgodic theorem for chains.", tags="ai, markov")

@@ -70,6 +70,16 @@ class Config:
 
     # --- watcher ----------------------------------------------------------
     watch_debounce_seconds: float = 3.0
+    #: Codex starts one MCP server per chat plus short-lived probes. Only one server at a time watches the vault
+    #: (holder of ``watcher.lock``); the others retry every ``watch_retry_seconds`` and take over if it exits.
+    #: The delay keeps a probe that lives for a second from starting an indexing pass.
+    watch_start_delay_seconds: float = 5.0
+    watch_retry_seconds: float = 30.0
+
+    # --- MCP server ---------------------------------------------------------
+    #: Load the embedding model at startup (~560 MB extra per server). Off by default: the model loads on the first
+    #: search, so chats and probes that never search stay small.
+    warm_up_on_start: bool = False
 
     # --- guarded Markdown writes (MCP create_note / append_to_note / replace_section) ----
     writes_enabled: bool = True
@@ -89,6 +99,10 @@ class Config:
     def lock_path(self) -> Path:
         return self.index_dir / "index.lock"
 
+    @property
+    def watcher_lock_path(self) -> Path:
+        return self.index_dir / "watcher.lock"
+
     def with_overrides(self, **kwargs: Any) -> "Config":
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return replace(self, **_coerce(kwargs))
@@ -107,8 +121,8 @@ _INT_FIELDS = {
     "write_max_bytes",
     "backup_keep",
 }
-_FLOAT_FIELDS = {"watch_debounce_seconds"}
-_BOOL_FIELDS = {"writes_enabled"}
+_FLOAT_FIELDS = {"watch_debounce_seconds", "watch_start_delay_seconds", "watch_retry_seconds"}
+_BOOL_FIELDS = {"writes_enabled", "warm_up_on_start"}
 
 
 def _coerce(values: dict[str, Any]) -> dict[str, Any]:

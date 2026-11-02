@@ -188,7 +188,8 @@ class AcademicMemoryService:
         self.indexer = indexer or Indexer(config, embedder=embedder, index=self.index)
         self.writer = writer or VaultWriter(config, self.indexer)
         self.expander = ContextExpander(self.index, config)
-        self.watching = False
+        self.watching = False  # True only in the one server that currently holds the watcher lock
+        self._stop_watching = threading.Event()
 
     # ------------------------------------------------------------------ read tools
     def search(
@@ -512,20 +513,54 @@ class AcademicMemoryService:
         """Keep the index in sync with the vault in the background (initial catch-up first)."""
         from .watch import VaultWatcher
 
-        watcher = VaultWatcher(self.indexer, debounce=self.config.watch_debounce_seconds, initial_sync=True)
+        from filelock import FileLock, Timeout
+
+        config = self.config
+        watcher = VaultWatcher(self.indexer, debounce=config.watch_debounce_seconds, initial_sync=True)
+        config.index_dir.mkdir(parents=True, exist_ok=True)
+        # thread_local=False: the lock is taken on the watcher thread but released from stop_watcher()'s thread.
+        leader_lock = FileLock(str(config.watcher_lock_path), thread_local=False)
+        self._stop_watching.clear()
 
         def run() -> None:
+            # Codex runs one server per chat and starts short-lived probes, so several servers share one vault.
+            # One watcher is enough: the holder of watcher.lock. The OS drops the lock when its process dies, and a
+            # waiting server then takes over. A probe that lives for a second never gets past the initial delay.
+            if self._stop_watching.wait(config.watch_start_delay_seconds):
+                return
             try:
-                watcher.start()
-                self.watching = True
-                log.info("watching %s", self.config.vault_path)
+                while True:
+                    try:
+                        leader_lock.acquire(timeout=0)
+                        break
+                    except Timeout:
+                        if self._stop_watching.wait(config.watch_retry_seconds):
+                            return
+                try:
+                    watcher.start()
+                    self.watching = True
+                    log.info("watching %s", config.vault_path)
+                except Exception:
+                    leader_lock.release()
+                    log.exception("watcher failed to start; the index will not update automatically")
             except Exception:
-                log.exception("watcher failed to start; the index will not update automatically")
+                log.exception("watcher election failed; the index will not update automatically")
 
         thread = threading.Thread(target=run, name="acadmem-watcher", daemon=True)
         thread.start()
         self.watcher = watcher
+        self._leader_lock = leader_lock
         return thread
+
+    def stop_watcher(self) -> None:
+        """Stop watching and give up leadership so another server can take over."""
+        self._stop_watching.set()
+        if self.watching:
+            self.watcher.stop()
+            self.watching = False
+        lock = getattr(self, "_leader_lock", None)
+        if lock is not None and lock.is_locked:
+            lock.release()
 
 
 # --------------------------------------------------------------------------- MCP wiring
@@ -712,6 +747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--index-dir", help="Index location (or ACADMEM_INDEX_DIR)")
     parser.add_argument("--config", help="TOML config file (or ACADMEM_CONFIG)")
     parser.add_argument("--no-watch", action="store_true", help="Do not keep the index in sync with the vault")
+    parser.add_argument("--warm-up", action="store_true", help="Load the embedding model at startup instead of on the first search")
     parser.add_argument("--read-only", action="store_true", help="Do not expose the Markdown write tools")
     parser.add_argument("--transport", default="stdio", choices=["stdio", "sse", "streamable-http"])
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -728,10 +764,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     service = AcademicMemoryService(config)
-    service.warm_up()
+    if args.warm_up or config.warm_up_on_start:
+        service.warm_up()
     if not args.no_watch:
         service.start_watcher()
-    build_server(service).run(args.transport)
+    try:
+        build_server(service).run(args.transport)  # returns when the client closes stdin
+    finally:
+        service.stop_watcher()
     return 0
 
 
